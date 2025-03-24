@@ -48,6 +48,7 @@ def progressive_higher_edge_addition_test(dataset):
         print(f"\n--- Testing with {edge_count} edges ---")
         edges = dataset[:edge_count]
         nodes_count = get_node_count(edges)
+        print(f"\n--- Node count: {nodes_count} ---")
 
         # CPU - without weights
         print("CPU - without weights")
@@ -176,6 +177,7 @@ def progressively_higher_walk_sampling_test(dataset):
 
     edges = dataset[:num_edges]
     nodes_count = get_node_count(edges)
+    print(f"\n--- Node count: {nodes_count} ---")
 
     for num_walks in walk_nums:
         print(f"Testing walk count: {num_walks:,}")
@@ -286,6 +288,7 @@ def varying_max_walk_length_test(dataset):
 
     edges = dataset[:num_edges]
     nodes_count = get_node_count(edges)
+    print(f"\n--- Node count: {nodes_count} ---")
 
     for walk_len in walk_lengths:
         print(f"Testing walk length: {walk_len}")
