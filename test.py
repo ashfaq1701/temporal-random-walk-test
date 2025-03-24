@@ -46,7 +46,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
         nodes_count = get_node_count(edges)
         print(f"\n--- Node count: {nodes_count} ---")
 
-        # CPU - without weights
+        # without weights
         print("Without weights")
         add_times = []
         walk_times = []
@@ -73,7 +73,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
         walk_sampling_times_index_based.append(np.mean(walk_times))
 
         # With weights
-        print("CPU - with weights")
+        print("With weights")
         add_times = []
         walk_times = []
         for _ in range(N_RUNS):
@@ -144,7 +144,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
             current_times.append(time.time() - start)
 
         avg_time = np.mean(current_times)
-        print(f"  CPU (Index) walk sampling time: {avg_time:.3f} sec")
+        print(f"Index Based walk sampling time: {avg_time:.3f} sec")
         walk_sampling_times_index_based.append(avg_time)
 
         # weight based
@@ -167,7 +167,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
             current_times.append(time.time() - start)
 
         avg_time = np.mean(current_times)
-        print(f"  CPU (Weight) walk sampling time: {avg_time:.3f} sec")
+        print(f"Weight based walk sampling time: {avg_time:.3f} sec")
         walk_sampling_times_weight_based.append(avg_time)
 
     return {
@@ -212,7 +212,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
             current_times.append(time.time() - start_time)
 
         avg_time = np.mean(current_times)
-        print(f"  CPU (Index) walk sampling time: {avg_time:.3f} sec")
+        print(f"walk sampling time: {avg_time:.3f} sec")
         walk_sampling_times.append(avg_time)
 
     return {
