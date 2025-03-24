@@ -1,0 +1,5 @@
+temporal-random-walk
+numpy
+pandas
+matplotlib
+jupyter
