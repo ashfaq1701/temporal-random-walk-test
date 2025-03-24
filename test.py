@@ -1,6 +1,9 @@
 import pickle
 import time
+import numpy as np
 from temporal_random_walk import TemporalRandomWalk
+
+N_RUNS = 3
 
 def read_temporal_edges(file_path):
     edges = []
@@ -19,6 +22,7 @@ def get_node_count(edges):
         nodes.add(src)
         nodes.add(dst)
     return len(nodes)
+
 
 def progressive_higher_edge_addition_test(dataset):
     edge_counts = [
@@ -41,84 +45,109 @@ def progressive_higher_edge_addition_test(dataset):
     walk_sampling_times_weight_based_gpu = []
 
     for edge_count in edge_counts:
+        print(f"\n--- Testing with {edge_count} edges ---")
         edges = dataset[:edge_count]
         nodes_count = get_node_count(edges)
 
         # CPU - without weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=False, max_time_capacity=-1,
-            enable_weight_computation=False, node_count_max_bound=nodes_count
-        )
-        start = time.time()
-        trw.add_multiple_edges(edges)
-        edge_addition_times_without_weights_cpu.append(time.time() - start)
+        print("CPU - without weights")
+        add_times = []
+        walk_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=False, max_time_capacity=-1,
+                enable_weight_computation=False, node_count_max_bound=nodes_count
+            )
+            start = time.time()
+            trw.add_multiple_edges(edges)
+            add_times.append(time.time() - start)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_index_based_cpu.append(time.time() - start)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            walk_times.append(time.time() - start)
+        edge_addition_times_without_weights_cpu.append(np.mean(add_times))
+        walk_sampling_times_index_based_cpu.append(np.mean(walk_times))
 
         # CPU - with weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=False, max_time_capacity=-1,
-            enable_weight_computation=True, node_count_max_bound=nodes_count
-        )
-        start = time.time()
-        trw.add_multiple_edges(edges)
-        edge_addition_times_with_weights_cpu.append(time.time() - start)
+        print("CPU - with weights")
+        add_times = []
+        walk_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=False, max_time_capacity=-1,
+                enable_weight_computation=True, node_count_max_bound=nodes_count
+            )
+            start = time.time()
+            trw.add_multiple_edges(edges)
+            add_times.append(time.time() - start)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialWeight",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_weight_based_cpu.append(time.time() - start)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialWeight",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            walk_times.append(time.time() - start)
+        edge_addition_times_with_weights_cpu.append(np.mean(add_times))
+        walk_sampling_times_weight_based_cpu.append(np.mean(walk_times))
 
         # GPU - without weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=True, max_time_capacity=-1,
-            enable_weight_computation=False, node_count_max_bound=nodes_count
-        )
-        start = time.time()
-        trw.add_multiple_edges(edges)
-        edge_addition_times_without_weights_gpu.append(time.time() - start)
+        print("GPU - without weights")
+        add_times = []
+        walk_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=True, max_time_capacity=-1,
+                enable_weight_computation=False, node_count_max_bound=nodes_count
+            )
+            start = time.time()
+            trw.add_multiple_edges(edges)
+            add_times.append(time.time() - start)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_index_based_gpu.append(time.time() - start)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            walk_times.append(time.time() - start)
+        edge_addition_times_without_weights_gpu.append(np.mean(add_times))
+        walk_sampling_times_index_based_gpu.append(np.mean(walk_times))
 
         # GPU - with weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=True, max_time_capacity=-1,
-            enable_weight_computation=True, node_count_max_bound=nodes_count
-        )
-        start = time.time()
-        trw.add_multiple_edges(edges)
-        edge_addition_times_with_weights_gpu.append(time.time() - start)
+        print("GPU - with weights")
+        add_times = []
+        walk_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=True, max_time_capacity=-1,
+                enable_weight_computation=True, node_count_max_bound=nodes_count
+            )
+            start = time.time()
+            trw.add_multiple_edges(edges)
+            add_times.append(time.time() - start)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialWeight",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_weight_based_gpu.append(time.time() - start)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialWeight",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            walk_times.append(time.time() - start)
+        edge_addition_times_with_weights_gpu.append(np.mean(add_times))
+        walk_sampling_times_weight_based_gpu.append(np.mean(walk_times))
 
     return {
         "cpu_index_add": edge_addition_times_without_weights_cpu,
@@ -130,6 +159,7 @@ def progressive_higher_edge_addition_test(dataset):
         "gpu_weight_add": edge_addition_times_with_weights_gpu,
         "gpu_weight_walk": walk_sampling_times_weight_based_gpu,
     }
+
 
 def progressively_higher_walk_sampling_test(dataset):
     num_edges = 60_000_000
@@ -148,73 +178,95 @@ def progressively_higher_walk_sampling_test(dataset):
     nodes_count = get_node_count(edges)
 
     for num_walks in walk_nums:
-        # CPU - no weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=False, max_time_capacity=-1,
-            enable_weight_computation=False, node_count_max_bound=nodes_count
-        )
-        trw.add_multiple_edges(edges)
+        print(f"Testing walk count: {num_walks:,}")
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=num_walks,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_index_based_cpu.append(time.time() - start)
+        # --- CPU - index based ---
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=False, max_time_capacity=-1,
+                enable_weight_computation=False, node_count_max_bound=nodes_count
+            )
+            trw.add_multiple_edges(edges)
 
-        # CPU - weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=False, max_time_capacity=-1,
-            enable_weight_computation=True, node_count_max_bound=nodes_count
-        )
-        trw.add_multiple_edges(edges)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=num_walks,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+        avg_time = np.mean(current_times)
+        print(f"  CPU (Index) walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_index_based_cpu.append(avg_time)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialWeight",
-            num_walks_total=num_walks,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_weight_based_cpu.append(time.time() - start)
+        # --- CPU - weight based ---
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=False, max_time_capacity=-1,
+                enable_weight_computation=True, node_count_max_bound=nodes_count
+            )
+            trw.add_multiple_edges(edges)
 
-        # GPU - no weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=True, max_time_capacity=-1,
-            enable_weight_computation=False, node_count_max_bound=nodes_count
-        )
-        trw.add_multiple_edges(edges)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialWeight",
+                num_walks_total=num_walks,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+        avg_time = np.mean(current_times)
+        print(f"  CPU (Weight) walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_weight_based_cpu.append(avg_time)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=num_walks,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_index_based_gpu.append(time.time() - start)
+        # --- GPU - index based ---
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=True, max_time_capacity=-1,
+                enable_weight_computation=False, node_count_max_bound=nodes_count
+            )
+            trw.add_multiple_edges(edges)
 
-        # GPU - weights
-        trw = TemporalRandomWalk(
-            is_directed=True, use_gpu=True, max_time_capacity=-1,
-            enable_weight_computation=True, node_count_max_bound=nodes_count
-        )
-        trw.add_multiple_edges(edges)
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=num_walks,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+        avg_time = np.mean(current_times)
+        print(f"  GPU (Index) walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_index_based_gpu.append(avg_time)
 
-        start = time.time()
-        trw.get_random_walks(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialWeight",
-            num_walks_total=num_walks,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_sampling_times_weight_based_gpu.append(time.time() - start)
+        # --- GPU - weight based ---
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=True, max_time_capacity=-1,
+                enable_weight_computation=True, node_count_max_bound=nodes_count
+            )
+            trw.add_multiple_edges(edges)
+
+            start = time.time()
+            trw.get_random_walks(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialWeight",
+                num_walks_total=num_walks,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+        avg_time = np.mean(current_times)
+        print(f"  GPU (Weight) walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_weight_based_gpu.append(avg_time)
 
     return {
         "cpu_index_walk": walk_sampling_times_index_based_cpu,
@@ -222,6 +274,7 @@ def progressively_higher_walk_sampling_test(dataset):
         "gpu_index_walk": walk_sampling_times_index_based_gpu,
         "gpu_weight_walk": walk_sampling_times_weight_based_gpu,
     }
+
 
 def varying_max_walk_length_test(dataset):
     num_edges = 60_000_000
@@ -235,53 +288,63 @@ def varying_max_walk_length_test(dataset):
     nodes_count = get_node_count(edges)
 
     for walk_len in walk_lengths:
-        # CPU - Index based
-        trw = TemporalRandomWalk(
-            is_directed=True,
-            use_gpu=False,
-            max_time_capacity=-1,
-            enable_weight_computation=False,
-            node_count_max_bound=nodes_count
-        )
+        print(f"Testing walk length: {walk_len}")
 
-        trw.add_multiple_edges(edges)
+        # --- CPU - Index based ---
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True,
+                use_gpu=False,
+                max_time_capacity=-1,
+                enable_weight_computation=False,
+                node_count_max_bound=nodes_count
+            )
+            trw.add_multiple_edges(edges)
 
-        start_time = time.time()
-        trw.get_random_walks(
-            max_walk_len=walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        duration = time.time() - start_time
-        walk_sampling_times_index_based_cpu.append(duration)
+            start_time = time.time()
+            trw.get_random_walks(
+                max_walk_len=walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start_time)
 
-        # GPU - Index based
-        trw = TemporalRandomWalk(
-            is_directed=True,
-            use_gpu=True,
-            max_time_capacity=-1,
-            enable_weight_computation=False,
-            node_count_max_bound=nodes_count
-        )
+        avg_time = np.mean(current_times)
+        print(f"  CPU (Index) walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_index_based_cpu.append(avg_time)
 
-        trw.add_multiple_edges(edges)
+        # --- GPU - Index based ---
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True,
+                use_gpu=True,
+                max_time_capacity=-1,
+                enable_weight_computation=False,
+                node_count_max_bound=nodes_count
+            )
+            trw.add_multiple_edges(edges)
 
-        start_time = time.time()
-        trw.get_random_walks(
-            max_walk_len=walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        duration = time.time() - start_time
-        walk_sampling_times_index_based_gpu.append(duration)
+            start_time = time.time()
+            trw.get_random_walks(
+                max_walk_len=walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start_time)
+
+        avg_time = np.mean(current_times)
+        print(f"  GPU (Index) walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_index_based_gpu.append(avg_time)
 
     return {
         "cpu_index_walk": walk_sampling_times_index_based_cpu,
-        "gpu_weight_walk": walk_sampling_times_index_based_gpu
+        "gpu_index_walk": walk_sampling_times_index_based_gpu
     }
 
 
@@ -308,6 +371,8 @@ def main():
     pickle.dump(results_edges, open("data/result_edges.pkl", "wb"))
     pickle.dump(results_walks, open("data/result_walks.pkl", "wb"))
     pickle.dump(result_max_walk_lens, open("data/result_max_walk_lens.pkl", "wb"))
+
+
 
 if __name__ == '__main__':
     main()
