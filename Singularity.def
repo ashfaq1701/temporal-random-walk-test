@@ -1,0 +1,39 @@
+Bootstrap: docker
+From: nvidia/cuda:12.8.1-devel-ubuntu20.04
+
+%environment
+    export DEBIAN_FRONTEND=noninteractive
+    export PATH="/usr/local/bin:$PATH"
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime
+
+    apt-get update && apt-get install -y \
+        software-properties-common \
+        build-essential \
+        git wget curl \
+        sudo \
+        pkg-config \
+        apt-transport-https  \
+        ca-certificates  \
+        automake \
+        autoconf \
+        gnupg
+
+    add-apt-repository ppa:deadsnakes/ppa && apt-get update
+
+    apt-get install -y python3.9-dev python3.9-distutils
+
+    ln -s /usr/bin/python3.9 /usr/bin/python
+
+    wget https://bootstrap.pypa.io/get-pip.py && python get-pip.py
+    pip install --no-cache-dir -r /project/requirements.txt
+
+%files
+    . /project/
+
+%runscript
+    echo "Running test.py with args: $@"
+    cd /project
+    python test.py "$@"

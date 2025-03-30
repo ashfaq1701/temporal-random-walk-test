@@ -323,10 +323,10 @@ def main(use_gpu):
     for k, v in results_incremental.items():
         print(f"{k}: {v}")
 
-    pickle.dump(results_edges, open(f"data/result_edges_{running_device}.pkl", "wb"))
-    pickle.dump(results_walks, open(f"data/result_walks_{running_device}.pkl", "wb"))
-    pickle.dump(result_max_walk_lens, open(f"data/result_max_walk_lens_{running_device}.pkl", "wb"))
-    pickle.dump(results_incremental, open(f"data/result_incremental_sliding_{running_device}.pkl", "wb"))
+    pickle.dump(results_edges, open(f"results/result_edges_{running_device}.pkl", "wb"))
+    pickle.dump(results_walks, open(f"results/result_walks_{running_device}.pkl", "wb"))
+    pickle.dump(result_max_walk_lens, open(f"results/result_max_walk_lens_{running_device}.pkl", "wb"))
+    pickle.dump(results_incremental, open(f"results/result_incremental_sliding_{running_device}.pkl", "wb"))
 
 
 if __name__ == '__main__':
