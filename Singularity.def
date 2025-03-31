@@ -33,8 +33,13 @@ From: nvidia/cuda:12.6.0-devel-rockylinux9
     # Create symlink for Python
     ln -sf /usr/bin/python3 /usr/bin/python
 
-    # Install pip and requirements
-    wget https://bootstrap.pypa.io/get-pip.py && python get-pip.py
+    # Install requirements directly with the system pip
+    # Create empty requirements.txt if it doesn't exist in the container
+    if [ ! -f /project/requirements.txt ]; then
+        mkdir -p /project
+        touch /project/requirements.txt
+    fi
+
     pip install --no-cache-dir -r /project/requirements.txt
 
 %files
