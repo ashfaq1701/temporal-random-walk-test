@@ -18,7 +18,6 @@ def read_temporal_edges(file_path):
             edges.append((src, dst, timestamp))
 
     edges.sort(key=lambda x: x[2])
-
     return edges
 
 
@@ -228,7 +227,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
 def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
     total_edges = 60_000_000
     increment_size = 500_000
-    sliding_window = 40_000_000  # time steps
+    sliding_window = 30_000_000  # time steps
     walk_count = 1_000_000
     max_walk_len = 100
 
@@ -305,32 +304,32 @@ def main(use_gpu):
     dataset = read_temporal_edges("data/sx-stackoverflow.txt")
     print(f"Loaded {len(dataset):,} edges.")
 
-    # results_edges = progressive_higher_edge_addition_test(dataset, use_gpu)
-    # results_walks = progressively_higher_walk_sampling_test(dataset, use_gpu)
-    # result_max_walk_lens = varying_max_walk_length_test(dataset, use_gpu)
+    results_edges = progressive_higher_edge_addition_test(dataset, use_gpu)
+    results_walks = progressively_higher_walk_sampling_test(dataset, use_gpu)
+    result_max_walk_lens = varying_max_walk_length_test(dataset, use_gpu)
     results_incremental = incremental_edge_addition_sliding_window_test(dataset, use_gpu)
 
     running_device = "GPU" if use_gpu else "CPU"
 
-    # print(f"Edge Addition Test ({running_device}):")
-    # for k, v in results_edges.items():
-    #     print(f"{k}: {v}")
-    #
-    # print(f"\nWalk Sampling Test ({running_device}):")
-    # for k, v in results_walks.items():
-    #     print(f"{k}: {v}")
-    #
-    # print(f"\nMax Walk Length Test ({running_device}):")
-    # for k, v in result_max_walk_lens.items():
-    #     print(f"{k}: {v}")
+    print(f"Edge Addition Test ({running_device}):")
+    for k, v in results_edges.items():
+        print(f"{k}: {v}")
+
+    print(f"\nWalk Sampling Test ({running_device}):")
+    for k, v in results_walks.items():
+        print(f"{k}: {v}")
+
+    print(f"\nMax Walk Length Test ({running_device}):")
+    for k, v in result_max_walk_lens.items():
+        print(f"{k}: {v}")
 
     print(f"\nIncremental Edge Addition with Sliding Window Test ({running_device}):")
     for k, v in results_incremental.items():
         print(f"{k}: {v}")
 
-    # pickle.dump(results_edges, open(f"results/result_edges_{running_device}.pkl", "wb"))
-    # pickle.dump(results_walks, open(f"results/result_walks_{running_device}.pkl", "wb"))
-    # pickle.dump(result_max_walk_lens, open(f"results/result_max_walk_lens_{running_device}.pkl", "wb"))
+    pickle.dump(results_edges, open(f"results/result_edges_{running_device}.pkl", "wb"))
+    pickle.dump(results_walks, open(f"results/result_walks_{running_device}.pkl", "wb"))
+    pickle.dump(result_max_walk_lens, open(f"results/result_max_walk_lens_{running_device}.pkl", "wb"))
     pickle.dump(results_incremental, open(f"results/result_incremental_sliding_{running_device}.pkl", "wb"))
 
 
