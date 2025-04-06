@@ -230,6 +230,7 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
     edge_addition_times = []
     walk_sampling_times = []
     total_edges_array = []
+    active_edges_array = []
 
     # Get node count for the entire dataset we'll use
     edges_subset = dataset[:total_edges]
@@ -287,10 +288,12 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
 
         # Report current active edge count (maybe less than total due to sliding window)
         active_edge_count = trw.get_edge_count()
+        active_edges_array.append(active_edge_count)
         print(f"Active edges in graph: {active_edge_count:,} (with sliding window)")
 
     return {
         "total_edges": total_edges_array,
+        "active_edges": active_edges_array,
         "edge_addition_time": edge_addition_times,
         "walk_sampling_time": walk_sampling_times
     }
