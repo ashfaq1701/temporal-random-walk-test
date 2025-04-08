@@ -21,14 +21,6 @@ def read_temporal_edges(file_path):
     return edges
 
 
-def get_node_count(edges):
-    nodes = set()
-    for src, dst, timestamp in edges:
-        nodes.add(src)
-        nodes.add(dst)
-    return len(nodes)
-
-
 def progressive_higher_edge_addition_test(dataset, use_gpu):
     edge_counts = [
         10_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000,
@@ -47,8 +39,6 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
     for edge_count in edge_counts:
         print(f"\n--- Testing with {edge_count} edges ---")
         edges = dataset[:edge_count]
-        nodes_count = get_node_count(edges)
-        print(f"\n--- Node count: {nodes_count} ---")
 
         # without weights
         print("Without weights")
@@ -57,7 +47,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
         for _ in range(N_RUNS):
             trw = TemporalRandomWalk(
                 is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
-                enable_weight_computation=False, node_count_max_bound=nodes_count
+                enable_weight_computation=False
             )
             start = time.time()
             trw.add_multiple_edges(edges)
@@ -83,7 +73,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
         for _ in range(N_RUNS):
             trw = TemporalRandomWalk(
                 is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
-                enable_weight_computation=True, node_count_max_bound=nodes_count
+                enable_weight_computation=True
             )
             start = time.time()
             trw.add_multiple_edges(edges)
@@ -122,8 +112,6 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
     walk_sampling_times_weight_based = []
 
     edges = dataset[:num_edges]
-    nodes_count = get_node_count(edges)
-    print(f"\n--- Node count: {nodes_count} ---")
 
     for num_walks in walk_nums:
         print(f"Testing walk count: {num_walks:,}")
@@ -133,7 +121,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
         for _ in range(N_RUNS):
             trw = TemporalRandomWalk(
                 is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
-                enable_weight_computation=False, node_count_max_bound=nodes_count
+                enable_weight_computation=False
             )
             trw.add_multiple_edges(edges)
 
@@ -156,7 +144,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
         for _ in range(N_RUNS):
             trw = TemporalRandomWalk(
                 is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
-                enable_weight_computation=True, node_count_max_bound=nodes_count
+                enable_weight_computation=True
             )
             trw.add_multiple_edges(edges)
 
@@ -188,8 +176,6 @@ def varying_max_walk_length_test(dataset, use_gpu):
     walk_sampling_times = []
 
     edges = dataset[:num_edges]
-    nodes_count = get_node_count(edges)
-    print(f"\n--- Node count: {nodes_count} ---")
 
     for walk_len in walk_lengths:
         print(f"Testing walk length: {walk_len}")
@@ -200,8 +186,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
                 is_directed=True,
                 use_gpu=use_gpu,
                 max_time_capacity=-1,
-                enable_weight_computation=False,
-                node_count_max_bound=nodes_count
+                enable_weight_computation=False
             )
             trw.add_multiple_edges(edges)
 
@@ -238,16 +223,13 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
 
     # Get node count for the entire dataset we'll use
     edges_subset = dataset[:total_edges]
-    nodes_count = get_node_count(edges_subset)
-    print(f"Total node count: {nodes_count}")
 
     # Create a single TRW instance that we'll incrementally update
     trw = TemporalRandomWalk(
         is_directed=True,
         use_gpu=use_gpu,
         max_time_capacity=sliding_window,  # Set sliding window
-        enable_weight_computation=False,
-        node_count_max_bound=nodes_count
+        enable_weight_computation=False
     )
 
     current_edge_count = 0
