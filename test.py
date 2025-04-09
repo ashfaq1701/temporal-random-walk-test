@@ -10,7 +10,7 @@ def read_temporal_edges(file_path):
     edges = []
     with open(file_path, 'r') as f:
         for line in f:
-            parts = line.strip().split()
+            parts = line.strip().split(',')
             if len(parts) != 3:
                 continue
             src, dst, timestamp = map(int, parts)
@@ -283,7 +283,7 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
 
 
 def main(use_gpu):
-    dataset = read_temporal_edges("data/sx-stackoverflow.txt")
+    dataset = read_temporal_edges("data/sx-stackoverflow.csv")
     print(f"Loaded {len(dataset):,} edges.")
 
     results_edges = progressive_higher_edge_addition_test(dataset, use_gpu)
