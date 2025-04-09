@@ -10,14 +10,19 @@ N_RUNS = 3
 def read_temporal_edges(file_path):
     edges = []
     with open(file_path, 'r') as f:
+        idx = 0
+
         for line in f:
+            if idx == 0:
+                continue
+
             parts = line.strip().split(',')
             if len(parts) != 3:
                 continue
             src, dst, timestamp = map(int, parts)
             edges.append((src, dst, timestamp))
 
-    edges.sort(key=lambda x: x[2])
+            idx += 1
     return edges
 
 
