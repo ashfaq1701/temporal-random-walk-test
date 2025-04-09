@@ -13,6 +13,7 @@ def read_temporal_edges(file_path):
 
         for line in f:
             if idx == 0:
+                idx += 1
                 continue
 
             parts = line.strip().split(',')
