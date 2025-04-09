@@ -60,7 +60,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
             add_times.append(time.time() - start)
 
             start = time.time()
-            trw.get_random_walks(
+            trw.get_random_walks_and_times_raw(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=walk_count,
@@ -86,7 +86,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
             add_times.append(time.time() - start)
 
             start = time.time()
-            trw.get_random_walks(
+            trw.get_random_walks_and_times_raw(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialWeight",
                 num_walks_total=walk_count,
@@ -132,7 +132,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
             trw.add_multiple_edges(edges)
 
             start = time.time()
-            trw.get_random_walks(
+            trw.get_random_walks_and_times_raw(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=num_walks,
@@ -155,7 +155,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
             trw.add_multiple_edges(edges)
 
             start = time.time()
-            trw.get_random_walks(
+            trw.get_random_walks_and_times_raw(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialWeight",
                 num_walks_total=num_walks,
@@ -197,7 +197,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
             trw.add_multiple_edges(edges)
 
             start_time = time.time()
-            trw.get_random_walks(
+            trw.get_random_walks_and_times_raw(
                 max_walk_len=walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=walk_count,
@@ -265,7 +265,7 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
         current_times = []
         for _ in range(N_RUNS):
             start_time = time.time()
-            trw.get_random_walks(
+            trw.get_random_walks_and_times_raw(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=walk_count,
