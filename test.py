@@ -217,7 +217,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
 def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
     total_edges = 60_000_000
     increment_size = 500_000
-    sliding_window = 30_000  # time steps
+    sliding_window = 30_000_000  # time steps
     walk_count = 1_000_000
     max_walk_len = 100
 
