@@ -106,7 +106,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
 
 
 def progressively_higher_walk_sampling_test(dataset, use_gpu):
-    num_edges = 60_000_000
+    num_edges = 40_000_000
     max_walk_len = 100
     walk_nums = [
         10_000, 50_000, 100_000, 200_000, 500_000,
@@ -174,7 +174,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
 
 
 def varying_max_walk_length_test(dataset, use_gpu):
-    num_edges = 60_000_000
+    num_edges = 40_000_000
     walk_count = 100_000
     walk_lengths = list(range(10, 310, 10))
 
