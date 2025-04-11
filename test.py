@@ -301,6 +301,8 @@ def main(use_gpu):
 
     running_device = "GPU" if use_gpu else "CPU"
 
+    print(f"---- Running on {running_device}. ----\n")
+
     print(f"Edge Addition Test ({running_device}):")
     for k, v in results_edges.items():
         print(f"{k}: {v}")
