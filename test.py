@@ -59,7 +59,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
             add_times.append(time.time() - start)
 
             start = time.time()
-            trw.get_random_walks_and_times_raw(
+            trw.get_random_walks_and_times(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=walk_count,
@@ -85,7 +85,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
             add_times.append(time.time() - start)
 
             start = time.time()
-            trw.get_random_walks_and_times_raw(
+            trw.get_random_walks_and_times(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialWeight",
                 num_walks_total=walk_count,
@@ -131,7 +131,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
             trw.add_multiple_edges(edges)
 
             start = time.time()
-            trw.get_random_walks_and_times_raw(
+            trw.get_random_walks_and_times(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=num_walks,
@@ -154,7 +154,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
             trw.add_multiple_edges(edges)
 
             start = time.time()
-            trw.get_random_walks_and_times_raw(
+            trw.get_random_walks_and_times(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialWeight",
                 num_walks_total=num_walks,
@@ -196,7 +196,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
             trw.add_multiple_edges(edges)
 
             start_time = time.time()
-            trw.get_random_walks_and_times_raw(
+            trw.get_random_walks_and_times(
                 max_walk_len=walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=walk_count,
@@ -264,7 +264,7 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
         current_times = []
         for _ in range(N_RUNS):
             start_time = time.time()
-            trw.get_random_walks_and_times_raw(
+            trw.get_random_walks_and_times(
                 max_walk_len=max_walk_len,
                 walk_bias="ExponentialIndex",
                 num_walks_total=walk_count,
@@ -294,14 +294,13 @@ def main(use_gpu):
     dataset = read_temporal_edges("data/sx-stackoverflow.csv")
     print(f"Loaded {len(dataset):,} edges.")
 
+    running_device = "GPU" if use_gpu else "CPU"
+    print(f"---- Running on {running_device}. ----\n")
+
     results_edges = progressive_higher_edge_addition_test(dataset, use_gpu)
     results_walks = progressively_higher_walk_sampling_test(dataset, use_gpu)
     result_max_walk_lens = varying_max_walk_length_test(dataset, use_gpu)
     results_incremental = incremental_edge_addition_sliding_window_test(dataset, use_gpu)
-
-    running_device = "GPU" if use_gpu else "CPU"
-
-    print(f"---- Running on {running_device}. ----\n")
 
     print(f"Edge Addition Test ({running_device}):")
     for k, v in results_edges.items():
