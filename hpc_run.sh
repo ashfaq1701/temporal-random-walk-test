@@ -7,4 +7,4 @@ source venv/bin/activate
 
 pip install -r requirements.txt
 
-python test.py "$@"
+python test.py "$@" > output.txt 2>&1
