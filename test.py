@@ -33,7 +33,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
         50_000_000, 60_000_000
     ]
 
-    walk_count = 5_000_000
+    walk_count = 1_000_000
     max_walk_len = 100
 
     edge_addition_times_without_weights = []
