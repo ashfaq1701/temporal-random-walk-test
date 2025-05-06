@@ -4,3 +4,5 @@ pandas
 matplotlib
 jupyter
 scikit-learn
+pyarrow
+raphtory
