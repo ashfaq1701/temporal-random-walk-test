@@ -115,8 +115,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_gpu', action='store_true', help='Enable GPU acceleration')
     parser.add_argument('--increment_size', type=int, default=3_000_000,
                         help='Timestamp range for incremental edge addition (default: 3,000,000)')
-    parser.add_argument('--sliding_window', type=int, default=60_000_000,
-                        help='Sliding window (default: 60,000,000)')
+    parser.add_argument('--sliding_window', type=int, default=50_000_000,
+                        help='Sliding window (default: 30,000,000)')
 
     args = parser.parse_args()
 
