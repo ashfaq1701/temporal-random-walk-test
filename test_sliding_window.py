@@ -1,7 +1,6 @@
 import argparse
 import pickle
 import time
-import gc
 import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
@@ -23,7 +22,7 @@ def read_temporal_edges(file_path):
 
 def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size, sliding_window):
     total_edges = 60_000_000  # time steps
-    walk_count = 1_000_000
+    walk_count = 500_000
     max_walk_len = 100
 
     edge_addition_times = []
@@ -86,8 +85,6 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
         active_edge_count = trw.get_edge_count()
         active_edges_array.append(active_edge_count)
         print(f"Active edges in graph: {active_edge_count:,} (with sliding window)")
-
-        gc.collect()
 
     return {
         "total_edges": total_edges_array,
