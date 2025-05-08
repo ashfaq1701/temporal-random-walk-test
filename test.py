@@ -2,31 +2,25 @@ import argparse
 import pickle
 import time
 import numpy as np
+import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
 N_RUNS = 3
 
 def read_temporal_edges(file_path):
-    edges = []
-    with open(file_path, 'r') as f:
-        idx = 0
+    df = pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
+    df = df.dropna(subset=['source', 'target', 'timestamp'])
 
-        for line in f:
-            if idx == 0:
-                idx += 1
-                continue
+    df = df.astype({'source': np.int32, 'target': np.int32, 'timestamp': np.int64})
 
-            parts = line.strip().split(',')
-            if len(parts) != 3:
-                continue
-            src, dst, timestamp = map(int, parts)
-            edges.append((src, dst, timestamp))
+    sources = df['source'].values
+    targets = df['target'].values
+    timestamps = df['timestamp'].values
 
-            idx += 1
-    return edges
+    return sources, targets, timestamps
 
 
-def progressive_higher_edge_addition_test(dataset, use_gpu):
+def progressive_higher_edge_addition_test(all_sources, all_targets, all_timestamps, use_gpu):
     edge_counts = [
         10_000, 50_000, 100_000, 500_000, 1_000_000, 2_000_000,
         5_000_000, 10_000_000, 20_000_000, 30_000_000, 40_000_000,
@@ -43,7 +37,9 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
 
     for edge_count in edge_counts:
         print(f"\n--- Testing with {edge_count} edges ---")
-        edges = dataset[:edge_count]
+        sources = all_sources[:edge_count]
+        targets = all_targets[:edge_count]
+        timestamps = all_timestamps[:edge_count]
 
         # without weights
         print("Without weights")
@@ -55,7 +51,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
                 enable_weight_computation=False
             )
             start = time.time()
-            trw.add_multiple_edges(edges)
+            trw.add_multiple_edges(sources, targets, timestamps)
             add_times.append(time.time() - start)
 
             start = time.time()
@@ -81,7 +77,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
                 enable_weight_computation=True
             )
             start = time.time()
-            trw.add_multiple_edges(edges)
+            trw.add_multiple_edges(sources, targets, timestamps)
             add_times.append(time.time() - start)
 
             start = time.time()
@@ -105,7 +101,7 @@ def progressive_higher_edge_addition_test(dataset, use_gpu):
     }
 
 
-def progressively_higher_walk_sampling_test(dataset, use_gpu):
+def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timestamps, use_gpu):
     num_edges = 40_000_000
     max_walk_len = 100
     walk_nums = [
@@ -116,7 +112,9 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
     walk_sampling_times_index_based = []
     walk_sampling_times_weight_based = []
 
-    edges = dataset[:num_edges]
+    sources = all_sources[:num_edges]
+    targets = all_targets[:num_edges]
+    timestamps = all_timestamps[:num_edges]
 
     for num_walks in walk_nums:
         print(f"Testing walk count: {num_walks:,}")
@@ -128,7 +126,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
                 is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
                 enable_weight_computation=False
             )
-            trw.add_multiple_edges(edges)
+            trw.add_multiple_edges(sources, targets, timestamps)
 
             start = time.time()
             trw.get_random_walks_and_times(
@@ -151,7 +149,7 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
                 is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
                 enable_weight_computation=True
             )
-            trw.add_multiple_edges(edges)
+            trw.add_multiple_edges(sources, targets, timestamps)
 
             start = time.time()
             trw.get_random_walks_and_times(
@@ -173,14 +171,16 @@ def progressively_higher_walk_sampling_test(dataset, use_gpu):
     }
 
 
-def varying_max_walk_length_test(dataset, use_gpu):
+def varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_gpu):
     num_edges = 40_000_000
     walk_count = 2_000_000
     walk_lengths = list(range(10, 310, 10))
 
     walk_sampling_times = []
 
-    edges = dataset[:num_edges]
+    sources = all_sources[:num_edges]
+    targets = all_targets[:num_edges]
+    timestamps = all_timestamps[:num_edges]
 
     for walk_len in walk_lengths:
         print(f"Testing walk length: {walk_len}")
@@ -193,7 +193,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
                 max_time_capacity=-1,
                 enable_weight_computation=False
             )
-            trw.add_multiple_edges(edges)
+            trw.add_multiple_edges(sources, targets, timestamps)
 
             start_time = time.time()
             trw.get_random_walks_and_times(
@@ -214,7 +214,7 @@ def varying_max_walk_length_test(dataset, use_gpu):
     }
 
 
-def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
+def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu):
     total_edges = 60_000_000
     increment_size = 500_000
     sliding_window = 30_000_000  # time steps
@@ -225,9 +225,6 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
     walk_sampling_times = []
     total_edges_array = []
     active_edges_array = []
-
-    # Get node count for the entire dataset we'll use
-    edges_subset = dataset[:total_edges]
 
     # Create a single TRW instance that we'll incrementally update
     trw = TemporalRandomWalk(
@@ -243,13 +240,16 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
         # Calculate next batch of edges to add
         start_idx = current_edge_count
         end_idx = min(current_edge_count + increment_size, total_edges)
-        edges_to_add = dataset[start_idx:end_idx]
+
+        sources = all_sources[start_idx:end_idx]
+        targets = all_targets[start_idx:end_idx]
+        timestamps = all_timestamps[start_idx:end_idx]
 
         print(f"\n--- Adding edges {start_idx:,} to {end_idx:,} ---")
 
         # Measure edge addition time
         start_time = time.time()
-        trw.add_multiple_edges(edges_to_add)
+        trw.add_multiple_edges(sources, targets, timestamps)
         edge_addition_time = time.time() - start_time
 
         # Update current count
@@ -291,16 +291,16 @@ def incremental_edge_addition_sliding_window_test(dataset, use_gpu):
 
 
 def main(use_gpu):
-    dataset = read_temporal_edges("data/sx-stackoverflow.csv")
-    print(f"Loaded {len(dataset):,} edges.")
+    all_sources, all_targets, all_timestamps = read_temporal_edges("data/sx-stackoverflow.csv")
+    print(f"Loaded {len(all_timestamps):,} edges.")
 
     running_device = "GPU" if use_gpu else "CPU"
     print(f"---- Running on {running_device}. ----\n")
 
-    results_edges = progressive_higher_edge_addition_test(dataset, use_gpu)
-    results_walks = progressively_higher_walk_sampling_test(dataset, use_gpu)
-    result_max_walk_lens = varying_max_walk_length_test(dataset, use_gpu)
-    results_incremental = incremental_edge_addition_sliding_window_test(dataset, use_gpu)
+    results_edges = progressive_higher_edge_addition_test(all_sources, all_targets, all_timestamps, use_gpu)
+    results_walks = progressively_higher_walk_sampling_test(all_sources, all_targets, all_timestamps, use_gpu)
+    result_max_walk_lens = varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_gpu)
+    results_incremental = incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu)
 
     print(f"Edge Addition Test ({running_device}):")
     for k, v in results_edges.items():
