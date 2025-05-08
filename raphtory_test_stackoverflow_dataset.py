@@ -26,9 +26,9 @@ def progressive_higher_edge_addition_test_raphtory(edges_df):
         start = time.time()
         g.load_edges_from_pandas(
             df=df_with_selected_edges,
-            time="ts",
-            src="u",
-            dst="i"
+            time="timestamp",
+            src="source",
+            dst="target"
         )
         elapsed = time.time() - start
         edge_addition_times.append(elapsed)
@@ -55,9 +55,9 @@ def incremental_edge_addition_test_raphtory(edges_df):
         start = time.time()
         g.load_edges_from_pandas(
             df=df_with_selected_edges,
-            time="ts",
-            src="u",
-            dst="i"
+            time="timestamp",
+            src="source",
+            dst="target"
         )
         elapsed = time.time() - start
         edge_addition_times.append(elapsed)
