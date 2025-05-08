@@ -3,6 +3,8 @@ import time
 import pandas as pd
 from raphtory import Graph
 
+N_RUNS = 3
+
 def read_temporal_edges_df(file_path):
     print(f"[INFO] Reading CSV: {file_path}")
     return pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
@@ -20,20 +22,27 @@ def progressive_higher_edge_addition_test_raphtory(edges_df):
     for edge_count in edge_counts:
         print(f"[INFO] Loading {edge_count} edges...")
 
-        df_with_selected_edges = edges_df.iloc[0:edge_count]
-        g = Graph()
+        total_time = 0.0
+        for run in range(N_RUNS):
+            print(f"  [RUN {run+1}/{N_RUNS}]")
 
-        start = time.time()
-        g.load_edges_from_pandas(
-            df=df_with_selected_edges,
-            time="timestamp",
-            src="source",
-            dst="target"
-        )
-        elapsed = time.time() - start
-        edge_addition_times.append(elapsed)
+            df_with_selected_edges = edges_df.iloc[0:edge_count]
+            g = Graph()
 
-        print(f"[SUCCESS] {edge_count} edges loaded in {elapsed:.2f} seconds.")
+            start = time.time()
+            g.load_edges_from_pandas(
+                df=df_with_selected_edges,
+                time="timestamp",
+                src="source",
+                dst="target"
+            )
+            run_time = time.time() - start
+            print(f"    [DONE] Time: {run_time:.2f} sec")
+            total_time += run_time
+
+        avg_time = total_time / N_RUNS
+        edge_addition_times.append(avg_time)
+        print(f"[RESULT] Avg time for {edge_count} edges: {avg_time:.2f} seconds")
 
     return edge_addition_times
 
