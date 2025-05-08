@@ -20,9 +20,8 @@ def read_temporal_edges(file_path):
     return sources, targets, timestamps
 
 
-def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size, sliding_window):
-    total_edges = 60_000_000  # time steps
-    walk_count = 2_000_000
+def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size, sliding_window, walk_count):
+    total_edges = 60_000_000
     max_walk_len = 100
 
     edge_addition_times = []
@@ -94,14 +93,22 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
     }
 
 
-def main(use_gpu, increment_size, sliding_window):
+def main(use_gpu, increment_size, sliding_window, walk_count):
     all_sources, all_targets, all_timestamps = read_temporal_edges("data/sx-stackoverflow.csv")
     print(f"Loaded {len(all_timestamps):,} edges.")
 
     running_device = "GPU" if use_gpu else "CPU"
     print(f"---- Running on {running_device}. ----\n")
 
-    results_incremental = incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size, sliding_window)
+    results_incremental = incremental_edge_addition_sliding_window_test(
+        all_sources,
+        all_targets,
+        all_timestamps,
+        use_gpu,
+        increment_size,
+        sliding_window,
+        walk_count
+    )
 
     print(f"\nIncremental Edge Addition with Sliding Window Test ({running_device}):")
     for k, v in results_incremental.items():
@@ -112,12 +119,15 @@ def main(use_gpu, increment_size, sliding_window):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
+
     parser.add_argument('--use_gpu', action='store_true', help='Enable GPU acceleration')
     parser.add_argument('--increment_size', type=int, default=3_000_000,
                         help='Timestamp range for incremental edge addition (default: 3,000,000)')
     parser.add_argument('--sliding_window', type=int, default=60_000_000,
                         help='Sliding window (default: 60,000,000)')
+    parser.add_argument('--walk_count', type=int, default=2_000_000,
+                        help='Walk count')
 
     args = parser.parse_args()
 
-    main(args.use_gpu, args.increment_size, args.sliding_window)
+    main(args.use_gpu, args.increment_size, args.sliding_window, args.walk_count)
