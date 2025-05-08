@@ -1,3 +1,4 @@
+import argparse
 import pickle
 import time
 import pandas as pd
@@ -46,10 +47,9 @@ def progressive_higher_edge_addition_test_raphtory(edges_df):
 
     return edge_addition_times
 
-def incremental_edge_addition_test_raphtory(edges_df):
+def incremental_edge_addition_test_raphtory(edges_df, increment_size):
     print("\n[INFO] Starting incremental edge addition test...")
     total_edges = 60_000_000
-    increment_size = 500_000
     current_start = 0
 
     g = Graph()
@@ -76,7 +76,7 @@ def incremental_edge_addition_test_raphtory(edges_df):
 
     return edge_addition_times
 
-def main():
+def main(increment_size):
     print("[INFO] Starting benchmark...\n")
     edges_df = read_temporal_edges_df("data/sx-stackoverflow.csv")
 
@@ -84,7 +84,7 @@ def main():
     results_edges = progressive_higher_edge_addition_test_raphtory(edges_df)
 
     print("\n[INFO] Running incremental edge addition test")
-    results_incremental = incremental_edge_addition_test_raphtory(edges_df)
+    results_incremental = incremental_edge_addition_test_raphtory(edges_df, increment_size)
 
     print("\n[INFO] Saving results...")
     pickle.dump(results_edges, open(f"results/result_edges_raphtory.pkl", "wb"))
@@ -92,4 +92,10 @@ def main():
     print("[DONE] Benchmark complete.\n")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
+    parser.add_argument('--increment_size', type=int, default=3_000_000,
+                        help='Increment size for incremental edge addition (default: 3,000,000)')
+
+    args = parser.parse_args()
+
+    main(args.increment_size)

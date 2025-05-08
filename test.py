@@ -214,9 +214,8 @@ def varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_g
     }
 
 
-def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu):
+def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size):
     total_edges = 60_000_000
-    increment_size = 500_000
     sliding_window = 30_000_000  # time steps
     walk_count = 5_000_000
     max_walk_len = 100
@@ -290,7 +289,7 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
     }
 
 
-def main(use_gpu):
+def main(use_gpu, increment_size):
     all_sources, all_targets, all_timestamps = read_temporal_edges("data/sx-stackoverflow.csv")
     print(f"Loaded {len(all_timestamps):,} edges.")
 
@@ -300,7 +299,7 @@ def main(use_gpu):
     results_edges = progressive_higher_edge_addition_test(all_sources, all_targets, all_timestamps, use_gpu)
     results_walks = progressively_higher_walk_sampling_test(all_sources, all_targets, all_timestamps, use_gpu)
     result_max_walk_lens = varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_gpu)
-    results_incremental = incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu)
+    results_incremental = incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size)
 
     print(f"Edge Addition Test ({running_device}):")
     for k, v in results_edges.items():
@@ -327,6 +326,9 @@ def main(use_gpu):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
     parser.add_argument('--use_gpu', action='store_true', help='Enable GPU acceleration')
+    parser.add_argument('--increment_size', type=int, default=3_000_000,
+                        help='Increment size for incremental edge addition (default: 3,000,000)')
+
     args = parser.parse_args()
 
-    main(args.use_gpu)
+    main(args.use_gpu, args.increment_size)
