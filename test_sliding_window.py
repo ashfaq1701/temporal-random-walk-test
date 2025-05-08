@@ -1,6 +1,7 @@
 import argparse
 import pickle
 import time
+import gc
 import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
@@ -86,6 +87,8 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
         active_edges_array.append(active_edge_count)
         print(f"Active edges in graph: {active_edge_count:,} (with sliding window)")
 
+        gc.collect()
+
     return {
         "total_edges": total_edges_array,
         "active_edges": active_edges_array,
@@ -116,7 +119,7 @@ if __name__ == '__main__':
     parser.add_argument('--increment_size', type=int, default=3_000_000,
                         help='Timestamp range for incremental edge addition (default: 3,000,000)')
     parser.add_argument('--sliding_window', type=int, default=50_000_000,
-                        help='Sliding window (default: 30,000,000)')
+                        help='Sliding window (default: 50,000,000)')
 
     args = parser.parse_args()
 
