@@ -93,8 +93,8 @@ def main(increment_size):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
-    parser.add_argument('--increment_size', type=int, default=3_000_000,
-                        help='Increment size for incremental edge addition (default: 3,000,000)')
+    parser.add_argument('--increment_size', type=int, default=5_000_000,
+                        help='Timestamp range for incremental edge addition (default: 5,000,000)')
 
     args = parser.parse_args()
 
