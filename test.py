@@ -173,7 +173,7 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
 
 def varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_gpu):
     num_edges = 40_000_000
-    walk_count = 2_000_000
+    walk_count = 3_000_000
     walk_lengths = list(range(10, 310, 10))
 
     walk_sampling_times = []
