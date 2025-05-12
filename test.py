@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
-N_RUNS = 3
+N_RUNS = 5
 
 def read_temporal_edges(file_path):
     df = pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
@@ -64,8 +64,8 @@ def progressive_higher_edge_addition_test(all_sources, all_targets, all_timestam
             )
             walk_times.append(time.time() - start)
 
-        edge_addition_times_without_weights.append(np.mean(add_times))
-        walk_sampling_times_index_based.append(np.mean(walk_times))
+        edge_addition_times_without_weights.append(add_times)
+        walk_sampling_times_index_based.append(walk_times)
 
         # With weights
         print("With weights")
@@ -90,8 +90,8 @@ def progressive_higher_edge_addition_test(all_sources, all_targets, all_timestam
             )
             walk_times.append(time.time() - start)
 
-        edge_addition_times_with_weights.append(np.mean(add_times))
-        walk_sampling_times_weight_based.append(np.mean(walk_times))
+        edge_addition_times_with_weights.append(add_times)
+        walk_sampling_times_weight_based.append(walk_times)
 
     return {
         "edge_addition_time_without_weights": edge_addition_times_without_weights,
@@ -140,7 +140,7 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
 
         avg_time = np.mean(current_times)
         print(f"Index Based walk sampling time: {avg_time:.3f} sec")
-        walk_sampling_times_index_based.append(avg_time)
+        walk_sampling_times_index_based.append(current_times)
 
         # weight based
         current_times = []
@@ -163,7 +163,7 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
 
         avg_time = np.mean(current_times)
         print(f"Weight based walk sampling time: {avg_time:.3f} sec")
-        walk_sampling_times_weight_based.append(avg_time)
+        walk_sampling_times_weight_based.append(current_times)
 
     return {
         "walk_sampling_time_index_based": walk_sampling_times_index_based,
@@ -207,7 +207,7 @@ def varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_g
 
         avg_time = np.mean(current_times)
         print(f"walk sampling time: {avg_time:.3f} sec")
-        walk_sampling_times.append(avg_time)
+        walk_sampling_times.append(current_times)
 
     return {
         "walk_sampling_time": walk_sampling_times
