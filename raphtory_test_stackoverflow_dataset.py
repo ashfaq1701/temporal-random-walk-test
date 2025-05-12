@@ -23,6 +23,7 @@ def progressive_higher_edge_addition_test_raphtory(edges_df):
     for edge_count in edge_counts:
         print(f"[INFO] Loading {edge_count} edges...")
 
+        current_edge_addition_times = []
         total_time = 0.0
         for run in range(N_RUNS):
             print(f"  [RUN {run+1}/{N_RUNS}]")
@@ -39,10 +40,11 @@ def progressive_higher_edge_addition_test_raphtory(edges_df):
             )
             run_time = time.time() - start
             print(f"    [DONE] Time: {run_time:.2f} sec")
+            current_edge_addition_times.append(run_time)
             total_time += run_time
 
         avg_time = total_time / N_RUNS
-        edge_addition_times.append(avg_time)
+        edge_addition_times.append(current_edge_addition_times)
         print(f"[RESULT] Avg time for {edge_count} edges: {avg_time:.2f} seconds")
 
     return edge_addition_times
