@@ -4,7 +4,7 @@ import time
 import pandas as pd
 from raphtory import Graph
 
-N_RUNS = 3
+N_RUNS = 5
 
 def read_temporal_edges_df(file_path):
     print(f"[INFO] Reading CSV: {file_path}")
