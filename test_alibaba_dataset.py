@@ -117,8 +117,8 @@ if __name__ == "__main__":
 
     # Walk count
     parser.add_argument(
-        '--walk_count', type=int, default=1_000_000,
-        help='Number of walks to generate (default 1_000_000)'
+        '--walk_count', type=int, default=2_000_000,
+        help='Number of walks to generate (default 2_000_000)'
     )
 
     # Shuffle data
