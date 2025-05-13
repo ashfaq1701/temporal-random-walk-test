@@ -33,11 +33,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
     total_edges_added = 0
 
     for i in range(0, 20160, minutes_pre_step):
-
-        dfs = []
-        for j in range(minutes_pre_step):
-            dfs.append(pd.read_parquet(os.path.join(base_dir, f'data_{i + j}.parquet')))
-
+        dfs = [pd.read_parquet(os.path.join(base_dir, f'data_{i + j}.parquet')) for j in range(minutes_pre_step)]
         merged_df = pd.concat(dfs, ignore_index=True)
 
         if shuffle_data:
@@ -51,9 +47,9 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
         targets = final_df['i'].values
         timestamps = final_df['ts'].values
 
-        start_time = time.time()
+        edge_addition_start_time = time.time()
         trw.add_multiple_edges(sources, targets, timestamps)
-        edge_addition_time = time.time() - start_time
+        edge_addition_time = time.time() - edge_addition_start_time
 
         edge_addition_times.append(edge_addition_time)
 
@@ -61,7 +57,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
         total_edges_per_iteration.append(total_edges_added)
         active_edges_per_iteration.append(active_edge_count)
 
-        start_time = time.time()
+        walk_start_time = time.time()
         trw.get_random_walks_and_times(
             max_walk_len=MAX_WALK_LEN,
             walk_bias="ExponentialIndex",
@@ -69,7 +65,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
             initial_edge_bias="Uniform",
             walk_direction="Forward_In_Time"
         )
-        walk_sampling_time = time.time() - start_time
+        walk_sampling_time = time.time() - walk_start_time
         walk_times.append(walk_sampling_time)
 
         total_minutes_data_processed += minutes_pre_step
@@ -117,8 +113,8 @@ if __name__ == "__main__":
 
     # Walk count
     parser.add_argument(
-        '--walk_count', type=int, default=2_000_000,
-        help='Number of walks to generate (default 2_000_000)'
+        '--walk_count', type=int, default=1_000_000,
+        help='Number of walks to generate (default 1_000_000)'
     )
 
     # Shuffle data
