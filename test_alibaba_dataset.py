@@ -9,7 +9,7 @@ from temporal_random_walk import TemporalRandomWalk
 MAX_WALK_LEN = 100
 
 
-def main(base_dir, window_size, walk_count, use_gpu):
+def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_gpu):
     runtime_start = time.time()
 
     running_device = "GPU" if use_gpu else "CPU"
@@ -32,23 +32,24 @@ def main(base_dir, window_size, walk_count, use_gpu):
 
     total_edges_added = 0
 
-    for i in range(0, 20160, 3):
-        df_path_1 = os.path.join(base_dir, f'data_{i}.parquet')
-        df_path_2 = os.path.join(base_dir, f'data_{i + 1}.parquet')
-        df_path_3 = os.path.join(base_dir, f'data_{i + 2}.parquet')
+    for i in range(0, 20160, minutes_pre_step):
 
-        df1 = pd.read_parquet(df_path_1)
-        df2 = pd.read_parquet(df_path_2)
-        df3 = pd.read_parquet(df_path_3)
+        dfs = []
+        for j in range(minutes_pre_step):
+            dfs.append(pd.read_parquet(os.path.join(base_dir, f'data_{i + j}.parquet')))
 
-        merged_df = pd.concat([df1, df2, df3], ignore_index=True)
-        shuffled_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
+        merged_df = pd.concat(dfs, ignore_index=True)
 
-        total_edges_added += len(shuffled_df)
+        if shuffle_data:
+            final_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
+        else:
+            final_df = merged_df
 
-        sources = shuffled_df['u'].values
-        targets = shuffled_df['i'].values
-        timestamps = shuffled_df['ts'].values
+        total_edges_added += len(final_df)
+
+        sources = final_df['u'].values
+        targets = final_df['i'].values
+        timestamps = final_df['ts'].values
 
         start_time = time.time()
         trw.add_multiple_edges(sources, targets, timestamps)
@@ -105,14 +106,25 @@ if __name__ == "__main__":
 
     # Window timestep size in milliseconds (default: 1 hour)
     parser.add_argument(
-        '--window_size', type=int, default=1_800_000,
-        help='Sliding window size in milliseconds (default: 1,800,000 = 30 minutes)'
+        '--window_size', type=int, default=900_000,
+        help='Sliding window size in milliseconds (default: 900,000 = 15 minutes)'
+    )
+
+    parser.add_argument(
+        '--minutes_pre_step', type=int, default=1,
+        help='Increment size in minutes (default: 1)'
     )
 
     # Walk count
     parser.add_argument(
         '--walk_count', type=int, default=1_000_000,
         help='Number of walks to generate (default 1_000_000)'
+    )
+
+    # Shuffle data
+    parser.add_argument(
+        '--shuffle_data', action='store_true',
+        help='Shuffle the data'
     )
 
     args = parser.parse_args()
@@ -122,4 +134,4 @@ if __name__ == "__main__":
     print(f"Use GPU: {args.use_gpu}")
     print(f"Window size: {args.window_size} ms")
 
-    main(args.base_dir, args.window_size, args.walk_count, args.use_gpu)
+    main(args.base_dir, args.minutes_pre_step, args.window_size, args.walk_count, args.shuffle_data, args.use_gpu)
