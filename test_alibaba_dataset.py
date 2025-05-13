@@ -46,9 +46,9 @@ def main(base_dir, window_size, walk_count, use_gpu):
 
         total_edges_added += len(shuffled_df)
 
-        sources = shuffled_df['source'].values
-        targets = shuffled_df['target'].values
-        timestamps = shuffled_df['timestamp'].values
+        sources = shuffled_df['u'].values
+        targets = shuffled_df['i'].values
+        timestamps = shuffled_df['ts'].values
 
         start_time = time.time()
         trw.add_multiple_edges(sources, targets, timestamps)
