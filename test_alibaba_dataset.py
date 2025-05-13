@@ -72,7 +72,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
         walk_sampling_time = time.time() - start_time
         walk_times.append(walk_sampling_time)
 
-        total_minutes_data_processed += 3
+        total_minutes_data_processed += minutes_pre_step
         print(f'{total_minutes_data_processed} minutes data processed, edge addition time: {edge_addition_time:.3f}, walk sampling time: {walk_sampling_time:.3f}')
 
 
