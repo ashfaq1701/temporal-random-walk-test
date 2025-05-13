@@ -111,8 +111,8 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '--minutes_pre_step', type=int, default=1,
-        help='Increment size in minutes (default: 1)'
+        '--minutes_pre_step', type=int, default=3,
+        help='Increment size in minutes (default: 3)'
     )
 
     # Walk count
