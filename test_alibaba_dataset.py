@@ -19,7 +19,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
         is_directed=True,
         use_gpu=use_gpu,
         max_time_capacity=window_size,
-        enable_weight_computation=False
+        enable_weight_computation=True
     )
 
     edge_addition_times = []
