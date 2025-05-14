@@ -3,6 +3,7 @@ import os
 import pickle
 import time
 
+import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
@@ -53,9 +54,9 @@ def main(base_dir, minutes_per_step, window_size, walk_count, use_gpu):
 
         total_edges_added += len(final_df)
 
-        sources = final_df['u'].values
-        targets = final_df['i'].values
-        timestamps = final_df['ts'].values
+        sources = final_df['u'].astype(np.int32).values
+        targets = final_df['i'].astype(np.int32).values
+        timestamps = final_df['ts'].astype(np.int64).values
 
         edge_addition_start_time = time.time()
         trw.add_multiple_edges(sources, targets, timestamps)
