@@ -9,7 +9,7 @@ from temporal_random_walk import TemporalRandomWalk
 MAX_WALK_LEN = 100
 
 
-def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_gpu):
+def main(base_dir, minutes_pre_step, window_size, walk_count, use_gpu):
     runtime_start = time.time()
 
     running_device = "GPU" if use_gpu else "CPU"
@@ -18,7 +18,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
     trw = TemporalRandomWalk(
         is_directed=True,
         use_gpu=use_gpu,
-        max_time_capacity=window_size,
+        max_time_capacity=window_size,  # Set sliding window
         enable_weight_computation=False
     )
 
@@ -35,11 +35,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, shuffle_data, use_
     for i in range(0, 20160, minutes_pre_step):
         dfs = [pd.read_parquet(os.path.join(base_dir, f'data_{i + j}.parquet')) for j in range(minutes_pre_step)]
         merged_df = pd.concat(dfs, ignore_index=True)
-
-        if shuffle_data:
-            final_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
-        else:
-            final_df = merged_df
+        final_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
 
         total_edges_added += len(final_df)
 
@@ -117,12 +113,6 @@ if __name__ == "__main__":
         help='Number of walks to generate (default 1_000_000)'
     )
 
-    # Shuffle data
-    parser.add_argument(
-        '--shuffle_data', action='store_true',
-        help='Shuffle the data'
-    )
-
     args = parser.parse_args()
 
     # Example usage
@@ -130,4 +120,4 @@ if __name__ == "__main__":
     print(f"Use GPU: {args.use_gpu}")
     print(f"Window size: {args.window_size} ms")
 
-    main(args.base_dir, args.minutes_pre_step, args.window_size, args.walk_count, args.shuffle_data, args.use_gpu)
+    main(args.base_dir, args.minutes_pre_step, args.window_size, args.walk_count, args.use_gpu)
