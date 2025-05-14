@@ -9,6 +9,20 @@ from temporal_random_walk import TemporalRandomWalk
 MAX_WALK_LEN = 100
 
 
+def human_readable_count(n):
+    if n >= 1_000_000_000:
+        billions = n // 1_000_000_000
+        millions = (n % 1_000_000_000) / 1_000_000
+        return f"{billions} billion {millions:.1f} million"
+    elif n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} million"
+    elif n >= 1_000:
+        return f"{n / 1_000:.1f} thousand"
+    else:
+        return str(n)
+
+
+
 def main(base_dir, minutes_per_step, window_size, walk_count, use_gpu):
     runtime_start = time.time()
 
@@ -65,8 +79,13 @@ def main(base_dir, minutes_per_step, window_size, walk_count, use_gpu):
         walk_times.append(walk_sampling_time)
 
         total_minutes_data_processed += minutes_per_step
-        print(f'{total_minutes_data_processed} minutes data processed, edge addition time: {edge_addition_time:.3f}, walk sampling time: {walk_sampling_time:.3f}')
-
+        print(
+            f"{total_minutes_data_processed} minutes data processed | "
+            f"Edge addition time: {edge_addition_time:.3f}s | "
+            f"Walk sampling time: {walk_sampling_time:.3f}s | "
+            f"Total edges: {human_readable_count(total_edges_added)} | "
+            f"Active edges: {human_readable_count(active_edge_count)}"
+        )
 
     print('Completed processing all data')
     results = {
