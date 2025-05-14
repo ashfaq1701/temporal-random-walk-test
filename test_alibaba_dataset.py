@@ -117,8 +117,8 @@ if __name__ == "__main__":
 
     # Window timestep size in milliseconds (default: 1 hour)
     parser.add_argument(
-        '--window_size', type=int, default=900_000,
-        help='Sliding window size in milliseconds (default: 900,000 = 15 minutes)'
+        '--window_size', type=int, default=1_800_000,
+        help='Sliding window size in milliseconds (default: 1_800,000 = 30 minutes)'
     )
 
     parser.add_argument(
