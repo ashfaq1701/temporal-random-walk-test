@@ -9,7 +9,7 @@ from temporal_random_walk import TemporalRandomWalk
 MAX_WALK_LEN = 100
 
 
-def main(base_dir, minutes_pre_step, window_size, walk_count, use_gpu):
+def main(base_dir, minutes_per_step, window_size, walk_count, use_gpu):
     runtime_start = time.time()
 
     running_device = "GPU" if use_gpu else "CPU"
@@ -32,8 +32,8 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, use_gpu):
 
     total_edges_added = 0
 
-    for i in range(0, 20160, minutes_pre_step):
-        dfs = [pd.read_parquet(os.path.join(base_dir, f'data_{i + j}.parquet')) for j in range(minutes_pre_step)]
+    for i in range(0, 20160, minutes_per_step):
+        dfs = [pd.read_parquet(os.path.join(base_dir, f'data_{i + j}.parquet')) for j in range(minutes_per_step)]
         merged_df = pd.concat(dfs, ignore_index=True)
         final_df = merged_df.sample(frac=1, random_state=42).reset_index(drop=True)
 
@@ -64,7 +64,7 @@ def main(base_dir, minutes_pre_step, window_size, walk_count, use_gpu):
         walk_sampling_time = time.time() - walk_start_time
         walk_times.append(walk_sampling_time)
 
-        total_minutes_data_processed += minutes_pre_step
+        total_minutes_data_processed += minutes_per_step
         print(f'{total_minutes_data_processed} minutes data processed, edge addition time: {edge_addition_time:.3f}, walk sampling time: {walk_sampling_time:.3f}')
 
 
@@ -120,4 +120,4 @@ if __name__ == "__main__":
     print(f"Use GPU: {args.use_gpu}")
     print(f"Window size: {args.window_size} ms")
 
-    main(args.base_dir, args.minutes_pre_step, args.window_size, args.walk_count, args.use_gpu)
+    main(args.base_dir, args.minutes_per_step, args.window_size, args.walk_count, args.use_gpu)
