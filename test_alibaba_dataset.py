@@ -103,7 +103,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        '--minutes_pre_step', type=int, default=3,
+        '--minutes_per_step', type=int, default=3,
         help='Increment size in minutes (default: 3)'
     )
 
