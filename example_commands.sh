@@ -1,0 +1,1 @@
+singularity run --nv --bind $(pwd):/project temporal-random-walk-test.sif test_sliding_window.py --use_gpu
