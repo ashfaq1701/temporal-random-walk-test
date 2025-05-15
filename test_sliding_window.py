@@ -85,8 +85,6 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
         active_edges_array.append(active_edge_count)
         print(f"Active edges in graph: {active_edge_count:,} (with sliding window)")
 
-        time.sleep(5)
-
     return {
         "total_edges": total_edges_array,
         "active_edges": active_edges_array,
