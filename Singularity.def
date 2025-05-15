@@ -38,7 +38,16 @@ From: nvidia/cuda:12.8.0-devel-rockylinux9
     mkdir -p /project
 
     # Install common Python packages that won't change frequently
-    pip install --no-cache-dir numpy pandas scipy matplotlib scikit-learn torch
+    pip install --no-cache-dir \
+        numpy \
+        pandas \
+        matplotlib \
+        jupyter \
+        scikit-learn \
+        pyarrow \
+        raphtory \
+        temporal-random-walk \
+        torch
 
 %runscript
     if [ $# -eq 0 ]; then
