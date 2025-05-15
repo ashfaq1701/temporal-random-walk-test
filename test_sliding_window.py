@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
+N_RUNS = 3
 
 def read_temporal_edges(file_path):
     df = pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
@@ -63,25 +64,26 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
         print(f"Edge addition time: {edge_addition_time:.3f} sec")
 
         # Now sample walks and measure time
-        start_time = time.time()
-        trw.get_random_walks_and_times(
-            max_walk_len=max_walk_len,
-            walk_bias="ExponentialIndex",
-            num_walks_total=walk_count,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time"
-        )
-        walk_time = time.time() - start_time
+        current_times = []
+        for _ in range(N_RUNS):
+            start_time = time.time()
+            trw.get_random_walks_and_times(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_total=walk_count,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start_time)
 
-        walk_sampling_times.append(walk_time)
-        print(f"Walk sampling time: {walk_time:.3f} sec")
+        avg_time = np.mean(current_times)
+        walk_sampling_times.append(avg_time)
+        print(f"Walk sampling time: {avg_time:.3f} sec")
 
         # Report current active edge count (maybe less than total due to sliding window)
         active_edge_count = trw.get_edge_count()
         active_edges_array.append(active_edge_count)
         print(f"Active edges in graph: {active_edge_count:,} (with sliding window)")
-
-        time.sleep(5)
 
     return {
         "total_edges": total_edges_array,
