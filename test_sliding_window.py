@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
-N_RUNS = 3
+N_RUNS = 2
 
 def read_temporal_edges(file_path):
     df = pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
