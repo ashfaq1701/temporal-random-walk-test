@@ -48,9 +48,9 @@ def main(base_dir, minutes_per_step):
         edge_addition_start_time = time.time()
         g.load_edges_from_pandas(
             df=final_df,
-            time="timestamp",
-            src="source",
-            dst="target"
+            time="ts",
+            src="u",
+            dst="i"
         )
         edge_addition_time = time.time() - edge_addition_start_time
 
