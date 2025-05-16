@@ -121,10 +121,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
 
     parser.add_argument('--use_gpu', action='store_true', help='Enable GPU acceleration')
-    parser.add_argument('--increment_size', type=int, default=3_000_000,
+    parser.add_argument('--increment_size', type=int, default=4_000_000,
                         help='Timestamp range for incremental edge addition (default: 5,000,000)')
-    parser.add_argument('--sliding_window', type=int, default=30_000_000,
-                        help='Sliding window (default: 70,000,000)')
+    parser.add_argument('--sliding_window', type=int, default=50_000_000,
+                        help='Sliding window (default: 50,000,000)')
     parser.add_argument('--walk_count', type=int, default=2_000_000,
                         help='Walk count')
 
