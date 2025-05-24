@@ -6,3 +6,4 @@ jupyter
 scikit-learn
 pyarrow
 raphtory
+scipy
