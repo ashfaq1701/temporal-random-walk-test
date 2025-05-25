@@ -1,8 +1,8 @@
 import argparse
 import pickle
 import time
+
 import numpy as np
-import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
 from utils import read_temporal_edges
@@ -271,8 +271,8 @@ def varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_g
     }
 
 
-def main(use_gpu):
-    all_sources, all_targets, all_timestamps = read_temporal_edges("data/sx-stackoverflow.csv")
+def main(data_file, use_gpu):
+    all_sources, all_targets, all_timestamps = read_temporal_edges(data_file)
     print(f"Loaded {len(all_timestamps):,} edges.")
 
     running_device = "GPU" if use_gpu else "CPU"
@@ -309,6 +309,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
 
     parser.add_argument('--use_gpu', action='store_true', help='Enable GPU acceleration')
+    parser.add_argument('--data_file', type=str, default="data/sx-stackoverflow.csv", help='Data filepath')
 
     args = parser.parse_args()
-    main(args.use_gpu)
+    main(args.data_file, args.use_gpu)

@@ -208,8 +208,8 @@ def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_target
     }
 
 
-def main():
-    all_sources, all_targets, all_timestamps = read_temporal_edges("data/alibaba-data.csv")
+def main(data_file):
+    all_sources, all_targets, all_timestamps = read_temporal_edges(data_file)
 
     print('----- Starting Stellargraph edge addition test')
     edge_addition_results_stellargraph = progressive_higher_edge_addition_test_stellargraph(
@@ -273,5 +273,9 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Stellargraph Benchmark")
+
+    parser.add_argument('--data_file', type=str, default="data/alibaba-data.csv",
+                        help='Data filepath')
+
     args = parser.parse_args()
-    main()
+    main(args.data_file)

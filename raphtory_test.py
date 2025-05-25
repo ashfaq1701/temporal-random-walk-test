@@ -76,9 +76,9 @@ def incremental_edge_addition_test_raphtory(edges_df, increment_size):
 
     return edge_addition_times
 
-def main(increment_size):
+def main(data_filename, increment_size):
     print("[INFO] Starting benchmark...\n")
-    edges_df = read_temporal_edges_df("data/sx-stackoverflow.csv")
+    edges_df = read_temporal_edges_df(data_filename)
 
     print("\n[INFO] Running progressive edge addition test")
     results_edges = progressive_higher_edge_addition_test_raphtory(edges_df)
@@ -95,7 +95,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
     parser.add_argument('--increment_size', type=int, default=5_000_000,
                         help='Timestamp range for incremental edge addition (default: 5,000,000)')
+    parser.add_argument('--data_file', type=str, default="data/sx-stackoverflow.csv",
+                        help='Data filepath')
 
     args = parser.parse_args()
 
-    main(args.increment_size)
+    main(args.data_filename, args.increment_size)

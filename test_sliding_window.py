@@ -83,8 +83,8 @@ def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_
     }
 
 
-def main(use_gpu, increment_size, sliding_window, walk_count):
-    all_sources, all_targets, all_timestamps = read_temporal_edges("data/sx-stackoverflow.csv")
+def main(data_file, use_gpu, increment_size, sliding_window, walk_count):
+    all_sources, all_targets, all_timestamps = read_temporal_edges(data_file)
     print(f"Loaded {len(all_timestamps):,} edges.")
 
     running_device = "GPU" if use_gpu else "CPU"
@@ -111,6 +111,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
 
     parser.add_argument('--use_gpu', action='store_true', help='Enable GPU acceleration')
+    parser.add_argument('--data_file', type=str, default="data/sx-stackoverflow.csv", help='Data filepath')
     parser.add_argument('--increment_size', type=int, default=5_000_000,
                         help='Timestamp range for incremental edge addition (default: 5,000,000)')
     parser.add_argument('--sliding_window', type=int, default=50_000_000,
@@ -120,4 +121,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    main(args.use_gpu, args.increment_size, args.sliding_window, args.walk_count)
+    main(args.data_file, args.use_gpu, args.increment_size, args.sliding_window, args.walk_count)
