@@ -1,0 +1,3 @@
+[submodule "libs/stellargraph"]
+	path = libs/stellargraph
+	url = git@github.com:stellargraph/stellargraph.git

@@ -5,19 +5,9 @@ import numpy as np
 import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
+from utils import read_temporal_edges
+
 N_RUNS = 5
-
-def read_temporal_edges(file_path):
-    df = pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
-    df = df.dropna(subset=['source', 'target', 'timestamp'])
-
-    df = df.astype({'source': np.int32, 'target': np.int32, 'timestamp': np.int64})
-
-    sources = df['source'].values
-    targets = df['target'].values
-    timestamps = df['timestamp'].values
-
-    return sources, targets, timestamps
 
 
 def progressive_higher_edge_addition_test(all_sources, all_targets, all_timestamps, use_gpu):
@@ -171,6 +161,73 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
     }
 
 
+def progressively_higher_per_node_walk_sampling_test(all_sources, all_targets, all_timestamps, use_gpu):
+    num_edges = 40_000_000
+    max_walk_len = 100
+    walks_per_node = range(50, 1000 + 1, 50)
+
+    walk_sampling_times_index_based = []
+    walk_sampling_times_weight_based = []
+
+    sources = all_sources[:num_edges]
+    targets = all_targets[:num_edges]
+    timestamps = all_timestamps[:num_edges]
+
+    for num_walks_per_node in walks_per_node:
+        print(f"Testing per-node walk count: {num_walks_per_node:,}")
+
+        # index based
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
+                enable_weight_computation=False
+            )
+            trw.add_multiple_edges(sources, targets, timestamps)
+
+            start = time.time()
+            trw.get_random_walks_and_times_for_all_nodes(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialIndex",
+                num_walks_per_node=num_walks_per_node,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+
+        avg_time = np.mean(current_times)
+        print(f"Index Based walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_index_based.append(current_times)
+
+        # weight based
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
+                enable_weight_computation=True
+            )
+            trw.add_multiple_edges(sources, targets, timestamps)
+
+            start = time.time()
+            trw.get_random_walks_and_times_for_all_nodes(
+                max_walk_len=max_walk_len,
+                walk_bias="ExponentialWeight",
+                num_walks_per_node=num_walks_per_node,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+
+        avg_time = np.mean(current_times)
+        print(f"Weight based walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_weight_based.append(current_times)
+
+    return {
+        "walk_sampling_time_index_based": walk_sampling_times_index_based,
+        "walk_sampling_time_weight_based": walk_sampling_times_weight_based
+    }
+
+
 def varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_gpu):
     num_edges = 40_000_000
     walk_count = 2_000_000
@@ -223,6 +280,7 @@ def main(use_gpu):
 
     results_edges = progressive_higher_edge_addition_test(all_sources, all_targets, all_timestamps, use_gpu)
     results_walks = progressively_higher_walk_sampling_test(all_sources, all_targets, all_timestamps, use_gpu)
+    results_walks_per_node = progressively_higher_per_node_walk_sampling_test(all_sources, all_targets, all_timestamps, use_gpu)
     result_max_walk_lens = varying_max_walk_length_test(all_sources, all_targets, all_timestamps, use_gpu)
 
     print(f"Edge Addition Test ({running_device}):")
@@ -233,12 +291,17 @@ def main(use_gpu):
     for k, v in results_walks.items():
         print(f"{k}: {v}")
 
+    print(f"\nPer-Node Walk Sampling Test ({running_device}):")
+    for k, v in results_walks_per_node.items():
+        print(f"{k}: {v}")
+
     print(f"\nMax Walk Length Test ({running_device}):")
     for k, v in result_max_walk_lens.items():
         print(f"{k}: {v}")
 
     pickle.dump(results_edges, open(f"results/result_edges_{running_device}.pkl", "wb"))
     pickle.dump(results_walks, open(f"results/result_walks_{running_device}.pkl", "wb"))
+    pickle.dump(results_walks_per_node, open(f"results/result_walks_per_node_{running_device}.pkl", "wb"))
     pickle.dump(result_max_walk_lens, open(f"results/result_max_walk_lens_{running_device}.pkl", "wb"))
 
 

@@ -1,14 +1,12 @@
 import argparse
 import pickle
 import time
-import pandas as pd
+
 from raphtory import Graph
 
-N_RUNS = 5
+from utils import read_temporal_edges_df
 
-def read_temporal_edges_df(file_path):
-    print(f"[INFO] Reading CSV: {file_path}")
-    return pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
+N_RUNS = 5
 
 def progressive_higher_edge_addition_test_raphtory(edges_df):
     print("\n[INFO] Starting progressive edge addition test...")
@@ -34,9 +32,9 @@ def progressive_higher_edge_addition_test_raphtory(edges_df):
             start = time.time()
             g.load_edges_from_pandas(
                 df=df_with_selected_edges,
-                time="timestamp",
-                src="source",
-                dst="target"
+                time="ts",
+                src="u",
+                dst="i"
             )
             run_time = time.time() - start
             print(f"    [DONE] Time: {run_time:.2f} sec")
@@ -66,9 +64,9 @@ def incremental_edge_addition_test_raphtory(edges_df, increment_size):
         start = time.time()
         g.load_edges_from_pandas(
             df=df_with_selected_edges,
-            time="timestamp",
-            src="source",
-            dst="target"
+            time="ts",
+            src="u",
+            dst="i"
         )
         elapsed = time.time() - start
         edge_addition_times.append(elapsed)

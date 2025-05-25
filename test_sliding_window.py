@@ -1,23 +1,13 @@
 import argparse
 import pickle
 import time
+
 import numpy as np
-import pandas as pd
 from temporal_random_walk import TemporalRandomWalk
 
-N_RUNS = 3
+from utils import read_temporal_edges
 
-def read_temporal_edges(file_path):
-    df = pd.read_csv(file_path, skiprows=1, header=None, names=['source', 'target', 'timestamp'])
-    df = df.dropna(subset=['source', 'target', 'timestamp'])
-
-    df = df.astype({'source': np.int32, 'target': np.int32, 'timestamp': np.int64})
-
-    sources = df['source'].values
-    targets = df['target'].values
-    timestamps = df['timestamp'].values
-
-    return sources, targets, timestamps
+N_RUNS = 5
 
 
 def incremental_edge_addition_sliding_window_test(all_sources, all_targets, all_timestamps, use_gpu, increment_size, sliding_window, walk_count):
