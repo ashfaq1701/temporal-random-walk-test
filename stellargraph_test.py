@@ -225,8 +225,23 @@ def main(data_file):
         all_timestamps
     )
 
+    print('----- Starting Stellargraph walk sampling test')
+    walk_sampling_results_stellargraph = progressively_higher_per_node_walk_sampling_test_stellargraph(
+        all_sources,
+        all_targets,
+        all_timestamps
+    )
+
     print('----- Starting TRW edge addition test - CPU')
     edge_addition_results_trw_cpu = progressive_higher_edge_addition_test_trw(
+        all_sources,
+        all_targets,
+        all_timestamps,
+        use_gpu=False
+    )
+
+    print('----- Starting TRW walk sampling test - CPU')
+    walk_sampling_results_trw_cpu = progressively_higher_per_node_walk_sampling_test_trw(
         all_sources,
         all_targets,
         all_timestamps,
@@ -239,21 +254,6 @@ def main(data_file):
         all_targets,
         all_timestamps,
         use_gpu=True
-    )
-
-    print('----- Starting Stellargraph walk sampling test')
-    walk_sampling_results_stellargraph = progressively_higher_per_node_walk_sampling_test_stellargraph(
-        all_sources,
-        all_targets,
-        all_timestamps
-    )
-
-    print('----- Starting TRW walk sampling test - CPU')
-    walk_sampling_results_trw_cpu = progressively_higher_per_node_walk_sampling_test_trw(
-        all_sources,
-        all_targets,
-        all_timestamps,
-        use_gpu=False
     )
 
     print('----- Starting TRW walk sampling test - GPU')
