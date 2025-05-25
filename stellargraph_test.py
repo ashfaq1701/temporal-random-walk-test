@@ -1,3 +1,9 @@
+import sys
+import os
+
+# Add stellargraph to path BEFORE any imports
+sys.path.insert(0, os.path.join(os.getcwd(), 'libs/stellargraph'))
+
 import argparse
 import pickle
 import time
@@ -6,8 +12,9 @@ import pandas as pd
 import numpy as np
 from temporal_random_walk import TemporalRandomWalk
 
-from libs.stellargraph.stellargraph.core import StellarGraph
-from libs.stellargraph.stellargraph.data import TemporalRandomWalk as TemporalRandomWalkStellarGraph
+# Now these imports will work
+from stellargraph.core import StellarGraph
+from stellargraph.data import TemporalRandomWalk as TemporalRandomWalkStellarGraph
 from utils import read_temporal_edges
 
 N_RUNS = 5

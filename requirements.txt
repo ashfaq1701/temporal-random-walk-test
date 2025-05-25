@@ -8,3 +8,4 @@ pyarrow
 raphtory
 scipy
 networkx
+tensorflow
