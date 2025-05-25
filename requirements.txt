@@ -1,5 +1,5 @@
+numpy<2.0
 temporal-random-walk
-numpy
 pandas
 matplotlib
 jupyter
