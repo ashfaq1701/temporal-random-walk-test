@@ -100,4 +100,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    main(args.data_filename, args.increment_size)
+    main(args.data_file, args.increment_size)
