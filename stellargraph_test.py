@@ -123,7 +123,7 @@ def progressive_higher_edge_addition_test_trw(all_sources, all_targets, all_time
 
 def progressively_higher_per_node_walk_sampling_test_stellargraph(all_sources, all_targets, all_timestamps):
     max_walk_len = 100
-    walks_per_node = range(50, 1000 + 1, 50)
+    walks_per_node = range(50, 500 + 1, 50)
 
     num_edges = 30_000_000
 
@@ -167,7 +167,7 @@ def progressively_higher_per_node_walk_sampling_test_stellargraph(all_sources, a
 
 def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_targets, all_timestamps, use_gpu):
     max_walk_len = 100
-    walks_per_node = range(50, 1000 + 1, 50)
+    walks_per_node = range(50, 500 + 1, 50)
 
     num_edges = 30_000_000
 
