@@ -230,12 +230,12 @@ def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_target
 def main(data_file):
     all_sources, all_targets, all_timestamps = read_temporal_edges(data_file)
 
-    # print('----- Starting Stellargraph edge addition test')
-    # edge_addition_results_stellargraph = progressive_higher_edge_addition_test_stellargraph(
-    #     all_sources,
-    #     all_targets,
-    #     all_timestamps
-    # )
+    print('----- Starting Stellargraph edge addition test')
+    edge_addition_results_stellargraph = progressive_higher_edge_addition_test_stellargraph(
+        all_sources,
+        all_targets,
+        all_timestamps
+    )
 
     print('----- Starting Stellargraph walk sampling test')
     walk_sampling_results_stellargraph = progressively_higher_per_node_walk_sampling_test_stellargraph(
@@ -279,7 +279,7 @@ def main(data_file):
     print('--- Completed all tests ---')
 
     combined_results = {
-        # 'edge_addition_stellargraph': edge_addition_results_stellargraph,
+        'edge_addition_stellargraph': edge_addition_results_stellargraph,
         'edge_addition_trw_cpu': edge_addition_results_trw_cpu,
         'edge_addition_trw_gpu': edge_addition_results_trw_gpu,
         'walk_sampling_stellargraph': walk_sampling_results_stellargraph,
