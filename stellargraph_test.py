@@ -125,9 +125,15 @@ def progressively_higher_per_node_walk_sampling_test_stellargraph(all_sources, a
     max_walk_len = 100
     walks_per_node = range(50, 1000 + 1, 50)
 
+    num_edges = 30_000_000
+
+    sources = all_sources[:num_edges]
+    targets = all_targets[:num_edges]
+    timestamps = all_timestamps[:num_edges]
+
     walk_sampling_times = []
 
-    edges, nodes = get_edges_and_nodes(all_sources, all_targets, all_timestamps)
+    edges, nodes = get_edges_and_nodes(sources, targets, timestamps)
 
     graph = StellarGraph(
         nodes=nodes,
@@ -163,6 +169,12 @@ def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_target
     max_walk_len = 100
     walks_per_node = range(50, 1000 + 1, 50)
 
+    num_edges = 30_000_000
+
+    sources = all_sources[:num_edges]
+    targets = all_targets[:num_edges]
+    timestamps = all_timestamps[:num_edges]
+
     walk_sampling_times_index_based = []
     walk_sampling_times_weight_based = []
 
@@ -170,7 +182,7 @@ def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_target
         is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
         enable_weight_computation=True
     )
-    trw.add_multiple_edges(all_sources, all_targets, all_timestamps)
+    trw.add_multiple_edges(sources, targets, timestamps)
 
     for num_walks_per_node in walks_per_node:
         print(f"Testing per-node walk count: {num_walks_per_node:,}")
