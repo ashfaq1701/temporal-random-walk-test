@@ -125,7 +125,7 @@ def progressively_higher_per_node_walk_sampling_test_stellargraph(all_sources, a
     max_walk_len = 100
     walks_per_node = range(50, 500 + 1, 50)
 
-    num_edges = 100_000
+    num_edges = 50_000
 
     sources = all_sources[:num_edges]
     targets = all_targets[:num_edges]
@@ -169,7 +169,7 @@ def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_target
     max_walk_len = 100
     walks_per_node = range(50, 500 + 1, 50)
 
-    num_edges = 100_000
+    num_edges = 50_000
 
     sources = all_sources[:num_edges]
     targets = all_targets[:num_edges]
