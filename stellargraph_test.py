@@ -229,7 +229,7 @@ def edge_size_vs_walk_sampling_test_stellargraph(all_sources, all_targets, all_t
     max_walk_len = 100
     walks_per_node = 50
 
-    edge_sizes = [1_000, 5_000, 10_000, 20_000, 50_000]
+    edge_sizes = [1_000, 2000, 5_000, 10_000, 20_000, 50_000]
 
     walk_sampling_times = []
 
@@ -276,7 +276,7 @@ def edge_size_vs_walk_sampling_test_trw(all_sources, all_targets, all_timestamps
     max_walk_len = 100
     walks_per_node = 50
 
-    edge_sizes = [1_000, 5_000, 10_000, 20_000, 50_000]
+    edge_sizes = [1_000, 2000, 5_000, 10_000, 20_000, 50_000]
 
     walk_sampling_times_index_based = []
     walk_sampling_times_weight_based = []
