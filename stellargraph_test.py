@@ -15,7 +15,7 @@ from stellargraph.core import StellarGraph
 from stellargraph.data import TemporalRandomWalk as TemporalRandomWalkStellarGraph
 from utils import read_temporal_edges
 
-N_RUNS = 2
+N_RUNS = 1
 
 def get_edges_and_nodes(sources, targets, timestamps):
     edges = pd.DataFrame({
