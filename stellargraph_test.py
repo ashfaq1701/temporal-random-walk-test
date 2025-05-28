@@ -119,117 +119,11 @@ def progressive_higher_edge_addition_test_trw(all_sources, all_targets, all_time
     }
 
 
-def progressively_higher_per_node_walk_sampling_test_stellargraph(all_sources, all_targets, all_timestamps):
-    max_walk_len = 100
-    walks_per_node = range(50, 250 + 1, 50)
-
-    num_edges = 50_000
-
-    sources = all_sources[:num_edges]
-    targets = all_targets[:num_edges]
-    timestamps = all_timestamps[:num_edges]
-
-    walk_sampling_times = []
-
-    edges, nodes = get_edges_and_nodes(sources, targets, timestamps)
-
-    graph = StellarGraph(
-        nodes=nodes,
-        edges=edges,
-        edge_weight_column="time",
-    )
-    temporal_rw = TemporalRandomWalkStellarGraph(graph)
-
-    for num_walks_per_node in walks_per_node:
-        print(f"Testing per-node walk count: {num_walks_per_node:,}")
-
-        current_times = []
-        for _ in range(N_RUNS):
-            num_cw = len(nodes) * num_walks_per_node * max_walk_len
-
-            start = time.time()
-            temporal_walks_stellar = temporal_rw.run(
-                num_cw=num_cw,
-                cw_size=2,
-                max_walk_length=max_walk_len,
-                walk_bias='exponential',
-            )
-            current_times.append(time.time() - start)
-
-        avg_time = np.mean(current_times)
-        print(f"Walk sampling time: {avg_time:.3f} sec")
-        walk_sampling_times.append(current_times)
-
-    return walk_sampling_times
-
-
-def progressively_higher_per_node_walk_sampling_test_trw(all_sources, all_targets, all_timestamps, use_gpu):
-    max_walk_len = 100
-    walks_per_node = range(50, 250 + 1, 50)
-
-    num_edges = 50_000
-
-    sources = all_sources[:num_edges]
-    targets = all_targets[:num_edges]
-    timestamps = all_timestamps[:num_edges]
-
-    walk_sampling_times_index_based = []
-    walk_sampling_times_weight_based = []
-
-    trw = TemporalRandomWalk(
-        is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
-        enable_weight_computation=True
-    )
-    trw.add_multiple_edges(sources, targets, timestamps)
-
-    for num_walks_per_node in walks_per_node:
-        print(f"Testing per-node walk count: {num_walks_per_node:,}")
-
-        # index based
-        current_times = []
-        for _ in range(N_RUNS):
-            start = time.time()
-            trw.get_random_walks_and_times_for_all_nodes(
-                max_walk_len=max_walk_len,
-                walk_bias="ExponentialIndex",
-                num_walks_per_node=num_walks_per_node,
-                initial_edge_bias="Uniform",
-                walk_direction="Forward_In_Time"
-            )
-            current_times.append(time.time() - start)
-
-        avg_time = np.mean(current_times)
-        print(f"Index Based walk sampling time: {avg_time:.3f} sec")
-        walk_sampling_times_index_based.append(current_times)
-
-        # weight based
-        current_times = []
-        for _ in range(N_RUNS):
-            start = time.time()
-            trw.get_random_walks_and_times_for_all_nodes(
-                max_walk_len=max_walk_len,
-                walk_bias="ExponentialWeight",
-                num_walks_per_node=num_walks_per_node,
-                initial_edge_bias="Uniform",
-                walk_direction="Forward_In_Time"
-            )
-            current_times.append(time.time() - start)
-
-        avg_time = np.mean(current_times)
-        print(f"Weight based walk sampling time: {avg_time:.3f} sec")
-        walk_sampling_times_weight_based.append(current_times)
-
-    return {
-        "walk_sampling_time_index_based": walk_sampling_times_index_based,
-        "walk_sampling_time_weight_based": walk_sampling_times_weight_based
-    }
-
-
 def edge_size_vs_walk_sampling_test_stellargraph(all_sources, all_targets, all_timestamps):
     max_walk_len = 100
     walks_per_node = 50
 
-    edge_sizes = [1_000, 2000, 5_000, 10_000, 20_000, 50_000]
+    edge_sizes = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 50_000, 75_000, 100_000]
 
     walk_sampling_times = []
 
@@ -276,7 +170,7 @@ def edge_size_vs_walk_sampling_test_trw(all_sources, all_targets, all_timestamps
     max_walk_len = 100
     walks_per_node = 50
 
-    edge_sizes = [1_000, 2000, 5_000, 10_000, 20_000, 50_000]
+    edge_sizes = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 50_000, 75_000, 100_000]
 
     walk_sampling_times_index_based = []
     walk_sampling_times_weight_based = []
@@ -350,11 +244,6 @@ def main(data_file):
         all_sources, all_targets, all_timestamps
     )
 
-    print('----- Starting StellarGraph walk sampling test -----')
-    combined_results['walk_sampling_stellargraph'] = progressively_higher_per_node_walk_sampling_test_stellargraph(
-        all_sources, all_targets, all_timestamps
-    )
-
     # --- TRW (CPU) Benchmarks ---
     print('----- Starting TRW edge addition test - CPU -----')
     combined_results['edge_addition_trw_cpu'] = progressive_higher_edge_addition_test_trw(
@@ -366,11 +255,6 @@ def main(data_file):
         all_sources, all_targets, all_timestamps, use_gpu=False
     )
 
-    print('----- Starting TRW walk sampling test - CPU -----')
-    combined_results['walk_sampling_trw_cpu'] = progressively_higher_per_node_walk_sampling_test_trw(
-        all_sources, all_targets, all_timestamps, use_gpu=False
-    )
-
     # --- TRW (GPU) Benchmarks ---
     print('----- Starting TRW edge addition test - GPU -----')
     combined_results['edge_addition_trw_gpu'] = progressive_higher_edge_addition_test_trw(
@@ -379,11 +263,6 @@ def main(data_file):
 
     print('----- Edge-size vs Walk Sampling Test - TRW GPU -----')
     combined_results['walk_sampling_vs_edge_size_trw_gpu'] = edge_size_vs_walk_sampling_test_trw(
-        all_sources, all_targets, all_timestamps, use_gpu=True
-    )
-
-    print('----- Starting TRW walk sampling test - GPU -----')
-    combined_results['walk_sampling_trw_gpu'] = progressively_higher_per_node_walk_sampling_test_trw(
         all_sources, all_targets, all_timestamps, use_gpu=True
     )
 
