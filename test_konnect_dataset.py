@@ -85,9 +85,9 @@ def main(use_gpu, max_walk_len, data_dir, n_runs):
                             names=['u', 'i', 'x', 'ts'])
 
     datasets = {
+        'growth': growth_df,
         'delicious': delicious_df,
-        'edit': edit_df,
-        'growth': growth_df
+        'edit': edit_df
     }
 
     results = {}
