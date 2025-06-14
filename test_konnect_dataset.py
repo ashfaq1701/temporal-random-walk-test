@@ -2,17 +2,40 @@ import argparse
 import os.path
 import time
 import pickle
-
 import numpy as np
 import pandas as pd
-
 from temporal_random_walk import TemporalRandomWalk
 
 
-def benchmark_dataset(data_df, use_gpu, max_walk_len, is_directed):
-    sources = data_df['u'].to_numpy()
-    targets = data_df['i'].to_numpy()
-    timestamps = data_df['ts'].to_numpy()
+def benchmark_dataset(data_name, data_dir, use_gpu, max_walk_len, is_directed):
+    if data_name == 'delicious':
+        df = pd.read_csv(
+            os.path.join(data_dir, 'out.delicious_delicious-ti_delicious-ti'),
+            sep=r'\s+',
+            skiprows=2,
+            header=None,
+            names=['u', 'i', 'x', 'ts'])
+    elif data_name == 'edit':
+        df = pd.read_csv(
+            os.path.join(data_dir, 'out.edit-enwiki'),
+            sep=r'\s+',
+            skiprows=1,
+            header=None,
+            names=['u', 'i', 'x', 'ts'])
+    elif data_name == 'growth':
+        df = pd.read_csv(os.path.join(data_dir, 'out.wikipedia-growth'),
+            sep=r'\s+',
+            skiprows=1,
+            header=None,
+            names=['u', 'i', 'x', 'ts'])
+    else:
+        raise ValueError(f"Unknown dataset {data_name}")
+
+    print(f"Loaded dataset: {data_name}, dataset shape: {df.shape}")
+
+    sources = df['u'].to_numpy()
+    targets = df['i'].to_numpy()
+    timestamps = df['ts'].to_numpy()
 
     trw_without_weights = TemporalRandomWalk(is_directed=is_directed, use_gpu=use_gpu, max_time_capacity=-1)
 
@@ -64,37 +87,16 @@ def benchmark_dataset(data_df, use_gpu, max_walk_len, is_directed):
 
 
 def main(use_gpu, max_walk_len, data_dir, n_runs):
-    print("Loading datasets...")
-
-    delicious_df = pd.read_csv(os.path.join(data_dir, 'out.delicious_delicious-ti_delicious-ti'),
-                               sep=r'\s+',
-                               skiprows=2,
-                               header=None,
-                               names=['u', 'i', 'x', 'ts'])
-
-    edit_df = pd.read_csv(os.path.join(data_dir, 'out.edit-enwiki'),
-                          sep=r'\s+',
-                          skiprows=1,
-                          header=None,
-                          names=['u', 'i', 'x', 'ts'])
-
-    growth_df = pd.read_csv(os.path.join(data_dir, 'out.wikipedia-growth'),
-                            sep=r'\s+',
-                            skiprows=1,
-                            header=None,
-                            names=['u', 'i', 'x', 'ts'])
-
-    datasets = {
-        'growth': growth_df,
-        'delicious': delicious_df,
-        'edit': edit_df
+    dataset_vs_directionality = {
+        'growth': True,
+        'delicious': False,
+        'edit': False
     }
 
     results = {}
 
-    for dataset_name, dataset_df in datasets.items():
+    for dataset_name, is_directed in dataset_vs_directionality.items():
         print(f"\nBenchmarking {dataset_name} dataset...")
-        print(f"Dataset shape: {dataset_df.shape}")
 
         results[dataset_name] = {
             'edge_addition_time_without_weights': [],
@@ -110,7 +112,7 @@ def main(use_gpu, max_walk_len, data_dir, n_runs):
         for run in range(n_runs):
             print(f"  Run {run + 1}/{n_runs}...")
 
-            run_results = benchmark_dataset(dataset_df, use_gpu, max_walk_len, is_directed=True)
+            run_results = benchmark_dataset(dataset_name, data_dir, use_gpu, max_walk_len, is_directed=is_directed)
 
             for metric, value in run_results.items():
                 results[dataset_name][metric].append(value)
