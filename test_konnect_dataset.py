@@ -1,4 +1,5 @@
 import argparse
+import os
 import os.path
 import time
 import pickle
@@ -122,6 +123,9 @@ def main(use_gpu, max_walk_len, data_dir, n_runs):
             print(f"    Exp index walk sampling: {run_results['exp_index_walk_sampling_time']:.3f}s")
             print(f"    Exp weight walk sampling: {run_results['exp_weight_walk_sampling_time']:.3f}s")
             print(f"    Linear walk sampling: {run_results['linear_walk_sampling_time']:.3f}s")
+            print(f"    Exp index avg walk len: {run_results['exp_index_mean_walk_len']:.2f}")
+            print(f"    Exp weight avg walk len: {run_results['exp_weight_mean_walk_len']:.2f}")
+            print(f"    Linear avg walk len: {run_results['linear_mean_walk_len']:.2f}")
 
     print("\nSaving results...")
     os.makedirs('results', exist_ok=True)
