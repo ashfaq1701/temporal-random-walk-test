@@ -132,8 +132,8 @@ def benchmark_dataset_single_run(data_name, data_dir, use_gpu, max_walk_len, is_
 def main(use_gpu, max_walk_len, data_dir, n_runs):
     dataset_vs_directionality = {
         'growth': True,
-        'delicious': False,
-        'edit': False
+        'edit': False,
+        'delicious': False
     }
 
     results = {}
