@@ -179,7 +179,10 @@ def main(use_gpu, max_walk_len, data_dir, n_runs):
 
     print("\nSaving results...")
     os.makedirs('results', exist_ok=True)
-    with open('results/konnect_benchmark_results.pkl', 'wb') as f:
+
+    gpu_suffix = "gpu" if use_gpu else "cpu"
+    export_path = f"results/konnect_benchmark_results_{gpu_suffix}.pkl"
+    with open(export_path, 'wb') as f:
         pickle.dump(results, f)
 
     print("\nFinal Results Summary:")
@@ -190,7 +193,7 @@ def main(use_gpu, max_walk_len, data_dir, n_runs):
             std_val = np.std(values)
             print(f"  {metric}: {mean_val:.4f} ± {std_val:.4f}")
 
-    print("\nResults saved to results/konnect_benchmark_results.pkl")
+    print(f"\nResults saved to {export_path}")
 
 
 if __name__ == "__main__":
