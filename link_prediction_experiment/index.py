@@ -527,12 +527,9 @@ if __name__ == '__main__':
         '--data_file_path', type=str, required=True,
         help='Path to data file (parquet format)'
     )
-    parser.add_argument('--batch_ts_size', type=int, default=100,
-                        help='Number of timestamps per batch')
-    parser.add_argument('--sliding_window_duration', type=int, default=1000,
-                        help='Sliding window duration for temporal random walk')
-    parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', default=False,
-                        help='Whether the graph is directed')
+    parser.add_argument('--batch_ts_size', type=int, required=True, help='Number of timestamps per batch')
+    parser.add_argument('--sliding_window_duration', type=int, required=True, help='Sliding window duration for temporal random walk')
+    parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True, help='Whether the graph is directed')
 
     parser.add_argument('--weighted_sum_alpha', type=float, default=0.5,
                         help='Alpha parameter for weighted sum in streaming approach')
