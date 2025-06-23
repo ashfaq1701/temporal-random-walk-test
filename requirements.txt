@@ -9,3 +9,4 @@ raphtory
 scipy
 networkx
 tensorflow
+gensim
