@@ -11,13 +11,18 @@ import torch.nn as nn
 import torch.optim as optim
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
-from sklearn.model_selection import train_test_split
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def split_train_test(X, y, train_percentage):
+    num_samples = X.shape[0]
+    train_len = int(num_samples * train_percentage)
+    return X[:train_len, :], X[train_len:, :], y[:train_len], y[train_len:]
 
 
 class EarlyStopping:
@@ -86,9 +91,7 @@ class MiniBatchLogisticRegression:
         logger.info(f"Training PyTorch neural network on {len(X):,} samples with batch size {self.batch_size:,}")
 
         # Split into train/validation
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=self.validation_split, random_state=42, stratify=y
-        )
+        X_train, X_val, y_train, y_val = split_train_test(X, y, 1.0 - self.validation_split)
 
         logger.info(f"Train: {len(X_train):,}, Validation: {len(X_val):,}")
 
@@ -352,9 +355,8 @@ def evaluate_link_prediction(
     logger.info("Feature creation completed")
 
     # Split into train/test for evaluation
-    test_size = 1.0 - link_prediction_training_percentage
-    X_train, X_test, y_train, y_test = train_test_split(
-        edge_features, labels, test_size=test_size, random_state=42, stratify=labels
+    X_train, X_test, y_train, y_test = split_train_test(
+        edge_features, labels, link_prediction_training_percentage
     )
 
     logger.info(f"Training classifier on {len(X_train):,} samples, testing on {len(X_test):,} samples")
