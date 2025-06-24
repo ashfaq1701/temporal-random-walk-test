@@ -199,6 +199,8 @@ def run_link_prediction_full_data(
     logger.info("Starting full data link prediction")
 
     temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=use_gpu, max_time_capacity=-1)
+
+    logger.info(f'Adding {len(train_sources)} edges in temporal random walk instance')
     temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
 
     batch_walk_start_time = time.time()
@@ -305,6 +307,7 @@ def run_link_prediction_streaming_window(
         logger.info(f"Batch {batch_idx + 1}/{num_batches}: {len(batch_sources)} edges")
 
         # Add batch to temporal_random_walk
+        logger.info(f'Adding {len(batch_sources)} edges in temporal random walk instance')
         temporal_random_walk.add_multiple_edges(batch_sources, batch_targets, batch_ts)
 
         # Get walks from the instance
