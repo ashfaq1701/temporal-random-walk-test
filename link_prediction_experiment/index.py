@@ -69,7 +69,7 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
 
         # Only generate what we need + small buffer
         remaining = num_negative_samples - len(negative_edges)
-        batch_size = min(remaining * 2, 100_000)
+        batch_size = min(remaining * 2, 1_000_000)
 
         u = np.random.choice(all_nodes, batch_size)
         v = np.random.choice(all_nodes, batch_size)
