@@ -148,58 +148,32 @@ def evaluate_link_prediction(
         np.zeros(len(negative_sources))  # Negative edges
     ])
 
-    logger.info(f"Processing {len(all_sources):,} edges for feature extraction")
-
-    # Create edge features using Hadamard product - BATCH PROCESSING for memory efficiency
-    embedding_dim = len(next(iter(node_embeddings.values())))
-    batch_size = 1000000  # Process 1M edges at a time
-    total_edges = len(all_sources)
-    num_batches = (total_edges + batch_size - 1) // batch_size
-
-    # Pre-allocate feature array
-    edge_features = np.zeros((total_edges, embedding_dim), dtype=np.float32)
+    # Create edge features using Hadamard product (element-wise multiplication)
+    edge_features = []
     missing_embeddings = 0
 
-    logger.info(f"Processing {num_batches} batches of {batch_size:,} edges each")
+    for src, tgt in zip(all_sources, all_targets):
+        if src in node_embeddings and tgt in node_embeddings:
+            # Hadamard product of source and target embeddings
+            src_embedding = node_embeddings[src]
+            tgt_embedding = node_embeddings[tgt]
+            hadamard_feature = src_embedding * tgt_embedding
+            edge_features.append(hadamard_feature)
+        else:
+            # Handle missing embeddings - use zero vector as fallback
+            if missing_embeddings < 10:  # Only log first 10 warnings
+                logger.warning(f"Missing embedding for edge ({src}, {tgt})")
+            missing_embeddings += 1
 
-    for batch_idx in range(num_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, total_edges)
-
-        batch_sources = all_sources[start_idx:end_idx]
-        batch_targets = all_targets[start_idx:end_idx]
-
-        # Process batch
-        for i, (src, tgt) in enumerate(zip(batch_sources, batch_targets)):
-            global_idx = start_idx + i
-
-            if src in node_embeddings and tgt in node_embeddings:
-                # Hadamard product of source and target embeddings
-                src_embedding = node_embeddings[src]
-                tgt_embedding = node_embeddings[tgt]
-                edge_features[global_idx] = src_embedding * tgt_embedding
-            else:
-                # Handle missing embeddings - use zero vector as fallback
-                if missing_embeddings < 10:  # Only log first 10 warnings
-                    logger.warning(f"Missing embedding for edge ({src}, {tgt})")
-                missing_embeddings += 1
-                # Zero vector already pre-allocated
-
-        # Log progress every 10 batches
-        if (batch_idx + 1) % 10 == 0:
-            progress = (batch_idx + 1) / num_batches * 100
-            logger.info(f"Feature extraction progress: {batch_idx + 1}/{num_batches} batches ({progress:.1f}%)")
+            # Use zero vector as fallback
+            embedding_dim = len(next(iter(node_embeddings.values())))
+            hadamard_feature = np.zeros(embedding_dim)
+            edge_features.append(hadamard_feature)
 
     if missing_embeddings > 0:
         logger.warning(f"Total missing embeddings: {missing_embeddings}")
 
-    logger.info("Feature extraction completed")
-
-    # Log memory usage
-    import psutil
-    process = psutil.Process()
-    memory_gb = process.memory_info().rss / 1024 / 1024 / 1024
-    logger.info(f"Current memory usage: {memory_gb:.2f} GB")
+    edge_features = np.array(edge_features)
 
     # Split into train/test for evaluation
     test_size = 1.0 - link_prediction_training_percentage
@@ -489,10 +463,7 @@ def run_link_prediction_experiments(
     test_timestamps = test_df['ts'].to_numpy()
 
     # Sample negative edges - returns NumPy arrays
-    # Use smaller sample for faster processing (can be adjusted)
-    num_negative_samples = min(len(test_sources), 10000000)  # Cap at 10M for performance
-    logger.info(f"Sampling {num_negative_samples:,} negative edges (instead of {len(test_sources):,})")
-    negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets, num_negative_samples)
+    negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets)
 
     # Run full data approach
     logger.info("=" * 50)
