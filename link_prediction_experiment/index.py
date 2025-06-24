@@ -112,6 +112,9 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
             progress = len(negative_edges) / num_negative_samples * 100
             logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
 
+    progress = len(negative_edges) / num_negative_samples * 100
+    logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
+
     # Return exact number requested
     neg_list = list(negative_edges)[:num_negative_samples]
     negative_sources = pd.Series([edge[0] for edge in neg_list])
