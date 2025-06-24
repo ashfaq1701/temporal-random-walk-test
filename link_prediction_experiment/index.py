@@ -103,7 +103,7 @@ class MiniBatchLogisticRegression:
 
         # Create datasets and dataloaders
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, pin_memory=True)
+        train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
 
         val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
         val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
