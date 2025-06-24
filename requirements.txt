@@ -10,3 +10,4 @@ scipy
 networkx
 tensorflow
 gensim
+torch
