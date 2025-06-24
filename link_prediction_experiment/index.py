@@ -49,7 +49,7 @@ def split_dataset(data_file_path, train_percentage):
     return train_df, test_df
 
 
-def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42, batch_size=10000):
+def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
     np.random.seed(seed)
 
     existing_edges = set(zip(test_sources, test_targets))
@@ -58,37 +58,66 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
     if num_negative_samples is None:
         num_negative_samples = len(test_sources)
 
+    # Calculate density and set appropriate batch size
+    max_possible = len(all_nodes) * (len(all_nodes) - 1)
+    density = len(existing_edges) / max_possible
+
+    # Scale batch size based on density
+    if density > 0.7:
+        batch_size = 5000000  # 5M for very dense graphs
+    elif density > 0.3:
+        batch_size = 1000000  # 1M for medium density
+    else:
+        batch_size = 100000  # 100K for sparse graphs
+
+    logger.info(f"Graph density: {density:.4f}, using batch size: {batch_size:,}")
+    logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
+
     negative_edges = set()
     attempts = 0
-    max_attempts = 1_000
 
-    logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
-
-    while len(negative_edges) < num_negative_samples and attempts < max_attempts:
+    while len(negative_edges) < num_negative_samples:
         remaining = num_negative_samples - len(negative_edges)
-        batch_samples = min(batch_size, remaining * 2)  # Small buffer
+        current_batch_size = min(batch_size, remaining * 10)  # Generate 10x what we need
 
-        u = np.random.choice(all_nodes, batch_samples, replace=True)
-        v = np.random.choice(all_nodes, batch_samples, replace=True)
+        # Generate large batch
+        u = np.random.choice(all_nodes, current_batch_size, replace=True)
+        v = np.random.choice(all_nodes, current_batch_size, replace=True)
 
-        # Process pairs one by one to avoid large set operations
-        for i in range(len(u)):
+        # Vectorized filtering
+        valid_mask = u != v
+        u_valid, v_valid = u[valid_mask], v[valid_mask]
+
+        # Process in chunks to avoid memory issues with very large batches
+        chunk_size = 100000
+        for i in range(0, len(u_valid), chunk_size):
             if len(negative_edges) >= num_negative_samples:
                 break
-            if u[i] != v[i] and (u[i], v[i]) not in existing_edges:
-                negative_edges.add((u[i], v[i]))
+
+            u_chunk = u_valid[i:i + chunk_size]
+            v_chunk = v_valid[i:i + chunk_size]
+
+            # Check chunk against existing edges
+            chunk_edges = set(zip(u_chunk, v_chunk)) - existing_edges
+            negative_edges.update(chunk_edges)
+
+            # Stop if we have enough
+            if len(negative_edges) >= num_negative_samples:
+                break
 
         attempts += 1
 
-        # Log every 10 attempts instead of every attempt
+        # Log every 10 attempts
         if attempts % 10 == 0:
-            logger.info(f"Attempt {attempts}: Found {len(negative_edges)}/{num_negative_samples} negative edges")
+            progress = len(negative_edges) / num_negative_samples * 100
+            logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
 
-    # Ensure exact count
+    # Return exact number requested
     neg_list = list(negative_edges)[:num_negative_samples]
     negative_sources = pd.Series([edge[0] for edge in neg_list])
     negative_targets = pd.Series([edge[1] for edge in neg_list])
 
+    logger.info(f"Successfully sampled {len(negative_sources):,} negative edges in {attempts} attempts")
     return negative_sources, negative_targets
 
 
