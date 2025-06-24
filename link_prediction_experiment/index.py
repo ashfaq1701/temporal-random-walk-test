@@ -847,7 +847,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--weighted_sum_alpha', type=float, default=0.5,
                         help='Alpha parameter for weighted sum in streaming approach')
-    parser.add_argument('--embedding_training_percentage', type=float, default=0.8,
+    parser.add_argument('--embedding_training_percentage', type=float, default=0.75,
                         help='Percentage of data used for training embeddings')
     parser.add_argument('--link_prediction_training_percentage', type=float, default=0.75,
                         help='Percentage of link prediction data used for training classifier')
