@@ -50,6 +50,7 @@ def split_dataset(data_file_path, train_percentage):
 
 
 def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
+    """Sample negative edges efficiently for large datasets - returns NumPy arrays."""
     np.random.seed(seed)
 
     existing_edges = set(zip(test_sources, test_targets))
@@ -107,7 +108,7 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
 
         attempts += 1
 
-        # Log every 10 attempts
+        # Log every 100 attempts
         if attempts % 100 == 0:
             progress = len(negative_edges) / num_negative_samples * 100
             logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
@@ -115,10 +116,12 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
     progress = len(negative_edges) / num_negative_samples * 100
     logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
 
-    # Return exact number requested
+    # Convert to NumPy arrays - more efficient approach
     neg_list = list(negative_edges)[:num_negative_samples]
-    negative_sources = pd.Series([edge[0] for edge in neg_list])
-    negative_targets = pd.Series([edge[1] for edge in neg_list])
+    neg_array = np.array(neg_list)  # Convert to 2D array
+
+    negative_sources = neg_array[:, 0]  # First column
+    negative_targets = neg_array[:, 1]  # Second column
 
     logger.info(f"Successfully sampled {len(negative_sources):,} negative edges in {attempts} attempts")
     return negative_sources, negative_targets
@@ -135,9 +138,9 @@ def evaluate_link_prediction(
     """Evaluate link prediction using Hadamard product and logistic regression."""
     logger.info("Starting link prediction evaluation")
 
-    # Combine positive and negative edges
-    all_sources = np.concatenate([test_sources, negative_sources])
-    all_targets = np.concatenate([test_targets, negative_targets])
+    # Combine positive and negative edges - ensure all are NumPy arrays
+    all_sources = np.concatenate([np.asarray(test_sources), np.asarray(negative_sources)])
+    all_targets = np.concatenate([np.asarray(test_targets), np.asarray(negative_targets)])
 
     # Create labels (1 for positive edges, 0 for negative edges)
     labels = np.concatenate([
@@ -245,7 +248,8 @@ def run_link_prediction_full_data(
     )
     batch_walk_duration = time.time() - batch_walk_start_time
 
-    logger.info(f'Generated {len(walks)} walks in {batch_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
+    logger.info(
+        f'Generated {len(walks)} walks in {batch_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
 
     # Remove padding from walks using actual walk lengths
     clean_walks = []
@@ -314,8 +318,8 @@ def run_link_prediction_streaming_window(
     # Global embedding store (dictionary)
     global_embeddings = {}
 
-    # Create batches by batch_ts_size
-    unique_timestamps = np.sort(train_timestamps.unique())
+    # Create batches by batch_ts_size - ensure we use NumPy arrays
+    unique_timestamps = np.sort(np.unique(train_timestamps))
     num_batches = len(unique_timestamps) // batch_ts_size
 
     logger.info(f"Processing {num_batches} batches with batch_ts_size={batch_ts_size}")
@@ -330,8 +334,8 @@ def run_link_prediction_streaming_window(
         end_ts_idx = min((batch_idx + 1) * batch_ts_size, len(unique_timestamps))
         batch_timestamps = unique_timestamps[start_ts_idx:end_ts_idx]
 
-        # Filter edges for current batch
-        batch_mask = train_timestamps.isin(batch_timestamps)
+        # Filter edges for current batch - use NumPy boolean indexing
+        batch_mask = np.isin(train_timestamps, batch_timestamps)
         batch_sources = train_sources[batch_mask]
         batch_targets = train_targets[batch_mask]
         batch_ts = train_timestamps[batch_mask]
@@ -353,7 +357,8 @@ def run_link_prediction_streaming_window(
         )
         streaming_walk_duration = time.time() - streaming_walk_start_time
 
-        logger.info(f'Generated {len(walks)} walks in {streaming_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
+        logger.info(
+            f'Generated {len(walks)} walks in {streaming_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
 
         # Clean walks (remove padding)
         clean_walks = []
@@ -448,10 +453,16 @@ def run_link_prediction_experiments(
 
     # Split dataset
     train_df, test_df = split_dataset(data_file_path, embedding_training_percentage)
-    train_sources, train_targets, train_timestamps = train_df['u'], train_df['i'], train_df['ts']
-    test_sources, test_targets, test_timestamps = test_df['u'], test_df['i'], test_df['ts']
 
-    # Sample negative edges
+    # Convert to NumPy arrays immediately
+    train_sources = train_df['u'].to_numpy()
+    train_targets = train_df['i'].to_numpy()
+    train_timestamps = train_df['ts'].to_numpy()
+    test_sources = test_df['u'].to_numpy()
+    test_targets = test_df['i'].to_numpy()
+    test_timestamps = test_df['ts'].to_numpy()
+
+    # Sample negative edges - returns NumPy arrays
     negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets)
 
     # Run full data approach
@@ -568,8 +579,10 @@ if __name__ == '__main__':
         help='Path to data file (parquet format)'
     )
     parser.add_argument('--batch_ts_size', type=int, required=True, help='Number of timestamps per batch')
-    parser.add_argument('--sliding_window_duration', type=int, required=True, help='Sliding window duration for temporal random walk')
-    parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True, help='Whether the graph is directed')
+    parser.add_argument('--sliding_window_duration', type=int, required=True,
+                        help='Sliding window duration for temporal random walk')
+    parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True,
+                        help='Whether the graph is directed')
 
     parser.add_argument('--weighted_sum_alpha', type=float, default=0.5,
                         help='Alpha parameter for weighted sum in streaming approach')
