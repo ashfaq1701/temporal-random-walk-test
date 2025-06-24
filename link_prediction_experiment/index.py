@@ -59,7 +59,7 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
         num_negative_samples = len(test_sources)
 
     negative_edges = set()
-    max_attempts = 50
+    max_attempts = 500
 
     logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
 
@@ -69,7 +69,7 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
 
         # Only generate what we need + small buffer
         remaining = num_negative_samples - len(negative_edges)
-        batch_size = min(remaining * 2, 50000)
+        batch_size = min(remaining * 2, 100_000)
 
         u = np.random.choice(all_nodes, batch_size)
         v = np.random.choice(all_nodes, batch_size)
