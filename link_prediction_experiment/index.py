@@ -108,7 +108,7 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
         attempts += 1
 
         # Log every 10 attempts
-        if attempts % 10 == 0:
+        if attempts % 100 == 0:
             progress = len(negative_edges) / num_negative_samples * 100
             logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
 
