@@ -61,6 +61,8 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
     negative_edges = set()
     max_attempts = 50
 
+    logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
+
     for attempt in range(max_attempts):
         if len(negative_edges) >= num_negative_samples:
             break
@@ -78,6 +80,9 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
                 break
             if u[i] != v[i] and (u[i], v[i]) not in existing_edges:
                 negative_edges.add((u[i], v[i]))
+
+    if len(negative_edges) < num_negative_samples:
+        logger.warning(f"Only generated {len(negative_edges)} negative samples out of {num_negative_samples} requested")
 
     # Trim to exact count
     neg_list = list(negative_edges)[:num_negative_samples]
