@@ -49,45 +49,45 @@ def split_dataset(data_file_path, train_percentage):
     return train_df, test_df
 
 
-def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
+def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42, batch_size=10000):
     np.random.seed(seed)
 
     existing_edges = set(zip(test_sources, test_targets))
-    all_nodes = np.unique(np.concatenate([test_sources, test_targets]))
+    all_nodes = np.array(list(set(test_sources).union(set(test_targets))))
 
     if num_negative_samples is None:
         num_negative_samples = len(test_sources)
 
     negative_edges = set()
+    attempts = 0
     max_attempts = 1_000
 
     logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
 
-    for attempt in range(max_attempts):
-        if len(negative_edges) >= num_negative_samples:
-            break
-
-        # Only generate what we need + small buffer
+    while len(negative_edges) < num_negative_samples and attempts < max_attempts:
         remaining = num_negative_samples - len(negative_edges)
-        batch_size = min(remaining * 2, 1_000_000)
+        batch_samples = min(batch_size, remaining * 2)  # Small buffer
 
-        u = np.random.choice(all_nodes, batch_size)
-        v = np.random.choice(all_nodes, batch_size)
+        u = np.random.choice(all_nodes, batch_samples, replace=True)
+        v = np.random.choice(all_nodes, batch_samples, replace=True)
 
-        # Check edges one by one with early stopping
+        # Process pairs one by one to avoid large set operations
         for i in range(len(u)):
             if len(negative_edges) >= num_negative_samples:
                 break
             if u[i] != v[i] and (u[i], v[i]) not in existing_edges:
                 negative_edges.add((u[i], v[i]))
 
-    if len(negative_edges) < num_negative_samples:
-        logger.warning(f"Only generated {len(negative_edges)} negative samples out of {num_negative_samples} requested")
+        attempts += 1
 
-    # Trim to exact count
+        # Log every 10 attempts instead of every attempt
+        if attempts % 10 == 0:
+            logger.info(f"Attempt {attempts}: Found {len(negative_edges)}/{num_negative_samples} negative edges")
+
+    # Ensure exact count
     neg_list = list(negative_edges)[:num_negative_samples]
-    negative_sources = pd.Series([e[0] for e in neg_list])
-    negative_targets = pd.Series([e[1] for e in neg_list])
+    negative_sources = pd.Series([edge[0] for edge in neg_list])
+    negative_targets = pd.Series([edge[1] for edge in neg_list])
 
     return negative_sources, negative_targets
 
