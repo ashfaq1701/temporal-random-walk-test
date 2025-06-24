@@ -168,11 +168,10 @@ class MiniBatchLogisticRegression:
                 val_auc = 0.0
 
             # Log progress
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                logger.info(f"Epoch {epoch + 1:3d}/{self.epochs}: "
-                            f"Train Loss: {avg_train_loss:.4f}, "
-                            f"Val Loss: {avg_val_loss:.4f}, "
-                            f"Val AUC: {val_auc:.4f}")
+            logger.info(f"Epoch {epoch + 1:3d}/{self.epochs}: "
+                        f"Train Loss: {avg_train_loss:.4f}, "
+                        f"Val Loss: {avg_val_loss:.4f}, "
+                        f"Val AUC: {val_auc:.4f}")
 
             # Early stopping check
             if self.early_stopping(avg_val_loss, self.model):
