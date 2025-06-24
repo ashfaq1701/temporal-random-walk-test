@@ -242,7 +242,7 @@ def run_link_prediction_full_data(
     )
     batch_walk_duration = time.time() - batch_walk_start_time
 
-    logger.info(f'Generated {len(walks)} walks in {batch_walk_duration:.2f} seconds')
+    logger.info(f'Generated {len(walks)} walks in {batch_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
 
     # Remove padding from walks using actual walk lengths
     clean_walks = []
@@ -339,6 +339,7 @@ def run_link_prediction_streaming_window(
         logger.info(f'Adding {len(batch_sources)} edges in temporal random walk instance')
         temporal_random_walk.add_multiple_edges(batch_sources, batch_targets, batch_ts)
 
+        streaming_walk_start_time = time.time()
         # Get walks from the instance
         walks, timestamps, walk_lengths = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
             max_walk_len=walk_length,
@@ -347,6 +348,9 @@ def run_link_prediction_streaming_window(
             initial_edge_bias='Uniform',
             walk_direction="Backward_In_Time"
         )
+        streaming_walk_duration = time.time() - streaming_walk_start_time
+
+        logger.info(f'Generated {len(walks)} walks in {streaming_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
 
         # Clean walks (remove padding)
         clean_walks = []
