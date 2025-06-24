@@ -54,7 +54,7 @@ class EarlyStopping:
 
 class MiniBatchLogisticRegression:
     def __init__(
-            self, input_dim, batch_size=10_000, learning_rate=0.001,
+            self, input_dim, batch_size=100_000, learning_rate=0.001,
             epochs=10, device='cpu', patience=5, validation_split=0.1
     ):
         self.device = device
@@ -331,7 +331,7 @@ def evaluate_link_prediction(
         node_embeddings,
         link_prediction_training_percentage,
         device,
-        batch_size=10_000
+        batch_size=100_000
 ):
     """Evaluate link prediction using Hadamard product and neural network."""
     logger.info("Starting link prediction evaluation")
