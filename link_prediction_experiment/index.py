@@ -108,6 +108,8 @@ class MiniBatchLogisticRegression:
         val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
         val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
 
+        logger.info('Starting training ...')
+
         for epoch in range(self.epochs):
             self.model.train()
             train_loss = 0.0
