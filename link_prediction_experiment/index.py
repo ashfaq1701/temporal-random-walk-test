@@ -49,49 +49,40 @@ def split_dataset(data_file_path, train_percentage):
     return train_df, test_df
 
 
-def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
-    """Sample negative edges that don't exist in the test set."""
+def sample_negative_edges_fixed(test_sources, test_targets, num_negative_samples=None, seed=42):
     np.random.seed(seed)
 
-    # Create set of existing edges for fast lookup
     existing_edges = set(zip(test_sources, test_targets))
+    all_nodes = np.unique(np.concatenate([test_sources, test_targets]))
 
-    # Get all unique nodes
-    all_nodes = set(test_sources).union(set(test_targets))
-    all_nodes = list(all_nodes)
-
-    # Determine number of negative samples
     if num_negative_samples is None:
         num_negative_samples = len(test_sources)
 
-    negative_edges = set()  # Use a set to avoid duplicate edges
-    attempts = 0
-    max_attempts = num_negative_samples * 10  # Limit attempts to prevent infinite loop
+    negative_edges = set()
+    max_attempts = 50
 
-    logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
+    for attempt in range(max_attempts):
+        if len(negative_edges) >= num_negative_samples:
+            break
 
-    while len(negative_edges) < num_negative_samples and attempts < max_attempts:
-        # Generate random node pairs in a vectorized manner
-        u = np.random.choice(all_nodes, num_negative_samples)
-        v = np.random.choice(all_nodes, num_negative_samples)
+        # Only generate what we need + small buffer
+        remaining = num_negative_samples - len(negative_edges)
+        batch_size = min(remaining * 2, 50000)
 
-        # Ensure that the sampled nodes are not the same (u != v)
-        u, v = u[u != v], v[u != v]
+        u = np.random.choice(all_nodes, batch_size)
+        v = np.random.choice(all_nodes, batch_size)
 
-        # Filter out existing edges
-        new_edges = set(zip(u, v)) - existing_edges
+        # Check edges one by one with early stopping
+        for i in range(len(u)):
+            if len(negative_edges) >= num_negative_samples:
+                break
+            if u[i] != v[i] and (u[i], v[i]) not in existing_edges:
+                negative_edges.add((u[i], v[i]))
 
-        # Add valid negative edges to the set
-        negative_edges.update(new_edges)
-
-        attempts += 1
-
-    if len(negative_edges) < num_negative_samples:
-        logger.warning(f"Only generated {len(negative_edges)} negative samples out of {num_negative_samples} requested")
-
-    # Convert to pandas Series
-    negative_sources = pd.Series([edge[0] for edge in negative_edges])
-    negative_targets = pd.Series([edge[1] for edge in negative_edges])
+    # Trim to exact count
+    neg_list = list(negative_edges)[:num_negative_samples]
+    negative_sources = pd.Series([e[0] for e in neg_list])
+    negative_targets = pd.Series([e[1] for e in neg_list])
 
     return negative_sources, negative_targets
 
