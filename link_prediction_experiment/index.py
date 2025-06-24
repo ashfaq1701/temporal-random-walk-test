@@ -1,21 +1,190 @@
 import argparse
-import time
-import pandas as pd
-import numpy as np
-from gensim.models import Word2Vec
-import logging
 import json
+import logging
+import time
 from pathlib import Path
 
-from sklearn.linear_model import LogisticRegression
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from sklearn.model_selection import train_test_split
-
 from temporal_random_walk import TemporalRandomWalk
+from torch.utils.data import DataLoader, TensorDataset
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+class EarlyStopping:
+    """Early stopping callback to prevent overfitting."""
+
+    def __init__(self, patience=7, min_delta=0.001, restore_best_weights=True):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.restore_best_weights = restore_best_weights
+        self.best_loss = float('inf')
+        self.counter = 0
+        self.best_weights = None
+
+    def __call__(self, val_loss, model):
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+            if self.restore_best_weights:
+                self.best_weights = model.state_dict().copy()
+        else:
+            self.counter += 1
+
+        if self.counter >= self.patience:
+            if self.restore_best_weights and self.best_weights is not None:
+                model.load_state_dict(self.best_weights)
+            return True
+        return False
+
+
+class MiniBatchLogisticRegression:
+    def __init__(
+            self, input_dim, batch_size=10_000, learning_rate=0.001,
+            epochs=10, device='cpu', patience=5, validation_split=0.1
+    ):
+        self.device = device
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.validation_split = validation_split
+
+        hidden_dim1 = max(64, input_dim // 2)
+        hidden_dim2 = max(32, input_dim // 4)
+
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim1),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+
+            nn.Linear(hidden_dim1, hidden_dim2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+
+            nn.Linear(hidden_dim2, 16),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+
+            nn.Linear(16, 1),
+            nn.Sigmoid()
+        ).to(device)
+
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.criterion = nn.BCELoss()
+        self.early_stopping = EarlyStopping(patience=patience)
+
+    def fit(self, X, y):
+        """Train the model with early stopping using validation split."""
+        logger.info(f"Training PyTorch neural network on {len(X):,} samples with batch size {self.batch_size:,}")
+
+        # Split into train/validation
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=self.validation_split, random_state=42, stratify=y
+        )
+
+        logger.info(f"Train: {len(X_train):,}, Validation: {len(X_val):,}")
+
+        # Convert to tensors
+        X_train_tensor = torch.FloatTensor(X_train).to(self.device)
+        y_train_tensor = torch.FloatTensor(y_train).unsqueeze(1).to(self.device)
+        X_val_tensor = torch.FloatTensor(X_val).to(self.device)
+        y_val_tensor = torch.FloatTensor(y_val).unsqueeze(1).to(self.device)
+
+        # Create datasets and dataloaders
+        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+        train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+
+        val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+        val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+
+        for epoch in range(self.epochs):
+            self.model.train()
+            train_loss = 0.0
+            train_batches = 0
+
+            for batch_X, batch_y in train_dataloader:
+                self.optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = self.criterion(outputs, batch_y)
+                loss.backward()
+                self.optimizer.step()
+
+                train_loss += loss.item()
+                train_batches += 1
+
+            avg_train_loss = train_loss / train_batches
+
+            self.model.eval()
+
+            val_loss = 0.0
+            val_batches = 0
+            all_val_preds = []
+            all_val_targets = []
+
+            with torch.no_grad():
+                for batch_X, batch_y in val_dataloader:
+                    outputs = self.model(batch_X)
+                    loss = self.criterion(outputs, batch_y)
+                    val_loss += loss.item()
+                    val_batches += 1
+
+                    all_val_preds.extend(outputs.cpu().numpy().flatten())
+                    all_val_targets.extend(batch_y.cpu().numpy().flatten())
+
+            avg_val_loss = val_loss / val_batches
+
+            try:
+                val_auc = roc_auc_score(all_val_targets, all_val_preds)
+            except:
+                val_auc = 0.0
+
+            # Log progress
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                logger.info(f"Epoch {epoch + 1:3d}/{self.epochs}: "
+                            f"Train Loss: {avg_train_loss:.4f}, "
+                            f"Val Loss: {avg_val_loss:.4f}, "
+                            f"Val AUC: {val_auc:.4f}")
+
+            # Early stopping check
+            if self.early_stopping(avg_val_loss, self.model):
+                logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+                logger.info(f"Best validation loss: {self.early_stopping.best_loss:.4f}")
+                break
+
+        logger.info("Training completed")
+
+    def predict_proba(self, X):
+        """Predict probabilities using mini-batches to avoid memory issues."""
+        self.model.eval()
+        predictions = []
+
+        # Process in batches to avoid memory issues
+        batch_size = self.batch_size
+        num_samples = len(X)
+
+        with torch.no_grad():
+            for i in range(0, num_samples, batch_size):
+                end_idx = min(i + batch_size, num_samples)
+                batch_X = torch.FloatTensor(X[i:end_idx]).to(self.device)
+
+                batch_pred = self.model(batch_X).cpu().numpy().flatten()
+                predictions.extend(batch_pred)
+
+        predictions = np.array(predictions)
+        return np.column_stack([1 - predictions, predictions])
+
+    def predict(self, X):
+        """Make binary predictions."""
+        proba = self.predict_proba(X)[:, 1]
+        return (proba > 0.5).astype(int)
 
 
 def split_dataset(data_file_path, train_percentage):
@@ -133,9 +302,11 @@ def evaluate_link_prediction(
         negative_sources,
         negative_targets,
         node_embeddings,
-        link_prediction_training_percentage
+        link_prediction_training_percentage,
+        device,
+        batch_size=10_000
 ):
-    """Evaluate link prediction using Hadamard product and logistic regression."""
+    """Evaluate link prediction using Hadamard product and neural network."""
     logger.info("Starting link prediction evaluation")
 
     # Combine positive and negative edges - ensure all are NumPy arrays
@@ -148,32 +319,37 @@ def evaluate_link_prediction(
         np.zeros(len(negative_sources))  # Negative edges
     ])
 
-    # Create edge features using Hadamard product (element-wise multiplication)
-    edge_features = []
+    logger.info(f"Processing {len(all_sources):,} edges for feature creation")
+
+    # Get embedding dimension
+    embedding_dim = len(next(iter(node_embeddings.values())))
+
+    # Pre-allocate feature array for better performance
+    edge_features = np.zeros((len(all_sources), embedding_dim), dtype=np.float32)
     missing_embeddings = 0
 
-    for src, tgt in zip(all_sources, all_targets):
+    # Vectorized approach where possible
+    logger.info("Creating Hadamard product features...")
+
+    for i, (src, tgt) in enumerate(zip(all_sources, all_targets)):
         if src in node_embeddings and tgt in node_embeddings:
             # Hadamard product of source and target embeddings
-            src_embedding = node_embeddings[src]
-            tgt_embedding = node_embeddings[tgt]
-            hadamard_feature = src_embedding * tgt_embedding
-            edge_features.append(hadamard_feature)
+            edge_features[i] = node_embeddings[src] * node_embeddings[tgt]
         else:
-            # Handle missing embeddings - use zero vector as fallback
+            # Handle missing embeddings - zero vector already pre-allocated
             if missing_embeddings < 10:  # Only log first 10 warnings
                 logger.warning(f"Missing embedding for edge ({src}, {tgt})")
             missing_embeddings += 1
 
-            # Use zero vector as fallback
-            embedding_dim = len(next(iter(node_embeddings.values())))
-            hadamard_feature = np.zeros(embedding_dim)
-            edge_features.append(hadamard_feature)
+        # Progress logging for large datasets
+        if (i + 1) % 10_000_000 == 0:
+            progress = (i + 1) / len(all_sources) * 100
+            logger.info(f"Feature creation progress: {progress:.1f}% ({i + 1:,}/{len(all_sources):,})")
 
     if missing_embeddings > 0:
         logger.warning(f"Total missing embeddings: {missing_embeddings} / {len(all_sources)}")
 
-    edge_features = np.array(edge_features)
+    logger.info("Feature creation completed")
 
     # Split into train/test for evaluation
     test_size = 1.0 - link_prediction_training_percentage
@@ -181,13 +357,24 @@ def evaluate_link_prediction(
         edge_features, labels, test_size=test_size, random_state=42, stratify=labels
     )
 
-    logger.info(f"Training classifier on {len(X_train)} samples, testing on {len(X_test)} samples")
+    logger.info(f"Training classifier on {len(X_train):,} samples, testing on {len(X_test):,} samples")
 
-    # Train logistic regression classifier
-    classifier = LogisticRegression(random_state=42, max_iter=1000)
+    # Use PyTorch mini-batch neural network with early stopping
+    classifier = MiniBatchLogisticRegression(
+        input_dim=embedding_dim,
+        batch_size=batch_size,
+        learning_rate=0.001,
+        epochs=50,
+        device=device,
+        patience=10,  # Early stopping patience
+        validation_split=0.15
+    )
+
+    # Train the model
     classifier.fit(X_train, y_train)
 
     # Make predictions
+    logger.info("Making predictions...")
     y_pred_proba = classifier.predict_proba(X_test)[:, 1]  # Probability of positive class
     y_pred = classifier.predict(X_test)
 
@@ -280,13 +467,16 @@ def run_link_prediction_full_data(
 
     logger.info(f'Trained embeddings for {len(node_embeddings)} nodes in {batch_node_embedding_duration:.2f} seconds')
 
+    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+
     return evaluate_link_prediction(
         test_sources,
         test_targets,
         negative_sources,
         negative_targets,
         node_embeddings,
-        link_prediction_training_percentage
+        link_prediction_training_percentage,
+        device
     )
 
 
@@ -413,13 +603,16 @@ def run_link_prediction_streaming_window(
     logger.info(f"Streaming window processing completed in {total_duration:.2f}s. "
                 f"Final embedding store size: {len(global_embeddings)}")
 
+    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+
     return evaluate_link_prediction(
         test_sources,
         test_targets,
         negative_sources,
         negative_targets,
         global_embeddings,
-        link_prediction_training_percentage
+        link_prediction_training_percentage,
+        device
     )
 
 
