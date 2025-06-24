@@ -9,6 +9,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast
+from torch.cuda.amp import GradScaler
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
@@ -28,7 +30,7 @@ def split_train_test(X, y, train_percentage):
 class EarlyStopping:
     """Early stopping callback to prevent overfitting."""
 
-    def __init__(self, patience=7, min_delta=0.001, restore_best_weights=True):
+    def __init__(self, patience=3, min_delta=0.0001, restore_best_weights=True):
         self.patience = patience
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights
@@ -54,13 +56,14 @@ class EarlyStopping:
 
 class MiniBatchLogisticRegression:
     def __init__(
-            self, input_dim, batch_size=100_000, learning_rate=0.001,
-            epochs=10, device='cpu', patience=5, validation_split=0.1
+            self, input_dim, batch_size=1_000_000, learning_rate=0.001,
+            epochs=10, device='cpu', patience=3, validation_split=0.1, use_amp=True
     ):
         self.device = device
         self.batch_size = batch_size
         self.epochs = epochs
         self.validation_split = validation_split
+        self.use_amp = use_amp and device == 'cuda'  # Only use AMP on CUDA
 
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
@@ -68,7 +71,7 @@ class MiniBatchLogisticRegression:
         self.model = nn.Sequential(
             nn.Linear(input_dim, hidden_dim1),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2),
 
             nn.Linear(hidden_dim1, hidden_dim2),
             nn.ReLU(),
@@ -85,6 +88,14 @@ class MiniBatchLogisticRegression:
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.criterion = nn.BCELoss()
         self.early_stopping = EarlyStopping(patience=patience)
+
+        # Initialize mixed precision scaler
+        if self.use_amp:
+            self.scaler = GradScaler()
+            logger.info("Mixed precision training enabled")
+        else:
+            self.scaler = None
+            logger.info("Mixed precision training disabled")
 
     def fit(self, X, y):
         """Train the model with early stopping using validation split - GPU memory efficient."""
@@ -121,10 +132,23 @@ class MiniBatchLogisticRegression:
                 batch_y = batch_y.to(self.device, non_blocking=True)
 
                 self.optimizer.zero_grad()
-                outputs = self.model(batch_X)
-                loss = self.criterion(outputs, batch_y)
-                loss.backward()
-                self.optimizer.step()
+
+                if self.use_amp:
+                    # Mixed precision training
+                    with autocast():
+                        outputs = self.model(batch_X)
+                        loss = self.criterion(outputs, batch_y)
+
+                    # Scaled backward pass
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # Standard FP32 training
+                    outputs = self.model(batch_X)
+                    loss = self.criterion(outputs, batch_y)
+                    loss.backward()
+                    self.optimizer.step()
 
                 train_loss += loss.item()
                 train_batches += 1
@@ -149,8 +173,16 @@ class MiniBatchLogisticRegression:
                     batch_X = batch_X.to(self.device, non_blocking=True)
                     batch_y = batch_y.to(self.device, non_blocking=True)
 
-                    outputs = self.model(batch_X)
-                    loss = self.criterion(outputs, batch_y)
+                    if self.use_amp:
+                        # Mixed precision inference
+                        with autocast():
+                            outputs = self.model(batch_X)
+                            loss = self.criterion(outputs, batch_y)
+                    else:
+                        # Standard FP32 inference
+                        outputs = self.model(batch_X)
+                        loss = self.criterion(outputs, batch_y)
+
                     val_loss += loss.item()
                     val_batches += 1
 
@@ -198,7 +230,14 @@ class MiniBatchLogisticRegression:
                 # Keep batch creation on CPU, then move to GPU
                 batch_X = torch.FloatTensor(X[i:end_idx]).to(self.device)
 
-                batch_pred = self.model(batch_X).cpu().numpy().flatten()
+                if self.use_amp:
+                    # Mixed precision inference
+                    with autocast():
+                        batch_pred = self.model(batch_X).cpu().numpy().flatten()
+                else:
+                    # Standard FP32 inference
+                    batch_pred = self.model(batch_X).cpu().numpy().flatten()
+
                 predictions.extend(batch_pred)
 
                 # Clear GPU memory after each batch
@@ -332,20 +371,22 @@ def evaluate_link_prediction(
         node_embeddings,
         link_prediction_training_percentage,
         device,
-        batch_size=100_000
+        batch_size=1_000_000
 ):
     """Evaluate link prediction using Hadamard product and neural network."""
     logger.info("Starting link prediction evaluation")
 
-    # Combine positive and negative edges - ensure all are NumPy arrays
     all_sources = np.concatenate([np.asarray(test_sources), np.asarray(negative_sources)])
     all_targets = np.concatenate([np.asarray(test_targets), np.asarray(negative_targets)])
-
-    # Create labels (1 for positive edges, 0 for negative edges)
     labels = np.concatenate([
         np.ones(len(test_sources)),  # Positive edges
         np.zeros(len(negative_sources))  # Negative edges
     ])
+
+    indices = np.random.permutation(len(all_sources))
+    all_sources = all_sources[indices]
+    all_targets = all_targets[indices]
+    labels = labels[indices]
 
     logger.info(f"Processing {len(all_sources):,} edges for feature creation")
 
