@@ -416,13 +416,14 @@ def run_link_prediction_full_data(
         num_walks_per_node,
         embedding_dim,
         link_prediction_training_percentage,
-        use_gpu,
+        walk_use_gpu,
+        link_prediction_use_gpu,
         seed=42
 ):
     """Run link prediction using full dataset approach."""
     logger.info("Starting full data link prediction")
 
-    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=use_gpu, max_time_capacity=-1)
+    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1)
 
     logger.info(f'Adding {len(train_sources)} edges in temporal random walk instance')
     temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
@@ -469,7 +470,7 @@ def run_link_prediction_full_data(
 
     logger.info(f'Trained embeddings for {len(node_embeddings)} nodes in {batch_node_embedding_duration:.2f} seconds')
 
-    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+    device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
     return evaluate_link_prediction(
         test_sources,
@@ -498,13 +499,14 @@ def run_link_prediction_streaming_window(
         weighted_sum_alpha,
         embedding_dim,
         link_prediction_training_percentage,
-        use_gpu,
+        walk_use_gpu,
+        link_prediction_use_gpu,
         seed=42
 ):
     """Run link prediction using streaming window approach."""
     logger.info("Starting streaming window link prediction")
 
-    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=use_gpu,
+    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu,
                                               max_time_capacity=sliding_window_duration)
 
     # Global embedding store (dictionary)
@@ -605,7 +607,7 @@ def run_link_prediction_streaming_window(
     logger.info(f"Streaming window processing completed in {total_duration:.2f}s. "
                 f"Final embedding store size: {len(global_embeddings)}")
 
-    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
+    device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
     return evaluate_link_prediction(
         test_sources,
@@ -641,6 +643,7 @@ def run_link_prediction_experiments(
         link_prediction_training_percentage,
         full_embedding_use_gpu,
         incremental_embedding_use_gpu,
+        link_prediction_use_gpu,
         output_dir=None
 ):
     """Run both full and streaming link prediction experiments."""
@@ -679,7 +682,8 @@ def run_link_prediction_experiments(
         num_walks_per_node,
         embedding_dim,
         link_prediction_training_percentage,
-        full_embedding_use_gpu
+        full_embedding_use_gpu,
+        link_prediction_use_gpu
     )
     full_duration = time.time() - full_start_time
     full_link_prediction_results['total_time'] = full_duration
@@ -715,7 +719,8 @@ def run_link_prediction_experiments(
         weighted_sum_alpha,
         embedding_dim,
         link_prediction_training_percentage,
-        incremental_embedding_use_gpu
+        incremental_embedding_use_gpu,
+        link_prediction_use_gpu
     )
     streaming_duration = time.time() - streaming_start_time
     streaming_link_prediction_results['total_time'] = streaming_duration
@@ -795,8 +800,12 @@ if __name__ == '__main__':
 
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
                         help='Enable GPU acceleration for full embedding')
+
     parser.add_argument('--incremental_embedding_use_gpu', action='store_true',
                         help='Enable GPU acceleration for incremental embedding')
+
+    parser.add_argument('--link_prediction_use_gpu', action='store_true',
+                        help='Enable GPU acceleration for link prediction')
 
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Directory to save results (optional)')
@@ -816,5 +825,6 @@ if __name__ == '__main__':
         args.link_prediction_training_percentage,
         args.full_embedding_use_gpu,
         args.incremental_embedding_use_gpu,
+        args.link_prediction_use_gpu,
         args.output_dir
     )
