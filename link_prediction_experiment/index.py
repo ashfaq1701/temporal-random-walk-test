@@ -59,7 +59,7 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
         num_negative_samples = len(test_sources)
 
     negative_edges = set()
-    max_attempts = 500
+    max_attempts = 1_000
 
     logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
 
