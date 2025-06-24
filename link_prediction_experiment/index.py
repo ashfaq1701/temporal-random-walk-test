@@ -64,20 +64,25 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
     if num_negative_samples is None:
         num_negative_samples = len(test_sources)
 
-    negative_edges = []
-    max_attempts = num_negative_samples * 100  # Prevent infinite loop
+    negative_edges = set()  # Use a set to avoid duplicate edges
     attempts = 0
+    max_attempts = num_negative_samples * 10  # Limit attempts to prevent infinite loop
 
     logger.info(f"Sampling {num_negative_samples} negative edges from {len(all_nodes)} nodes")
 
     while len(negative_edges) < num_negative_samples and attempts < max_attempts:
-        # Randomly sample two nodes
-        u = np.random.choice(all_nodes)
-        v = np.random.choice(all_nodes)
+        # Generate random node pairs in a vectorized manner
+        u = np.random.choice(all_nodes, num_negative_samples)
+        v = np.random.choice(all_nodes, num_negative_samples)
 
-        # Check if this edge doesn't exist and nodes are different
-        if (u, v) not in existing_edges and u != v:
-            negative_edges.append((u, v))
+        # Ensure that the sampled nodes are not the same (u != v)
+        u, v = u[u != v], v[u != v]
+
+        # Filter out existing edges
+        new_edges = set(zip(u, v)) - existing_edges
+
+        # Add valid negative edges to the set
+        negative_edges.update(new_edges)
 
         attempts += 1
 
