@@ -49,7 +49,7 @@ def split_dataset(data_file_path, train_percentage):
     return train_df, test_df
 
 
-def sample_negative_edges_fixed(test_sources, test_targets, num_negative_samples=None, seed=42):
+def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
     np.random.seed(seed)
 
     existing_edges = set(zip(test_sources, test_targets))
