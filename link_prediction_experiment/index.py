@@ -87,7 +87,7 @@ class MiniBatchLogisticRegression:
         self.early_stopping = EarlyStopping(patience=patience)
 
     def fit(self, X, y):
-        """Train the model with early stopping using validation split."""
+        """Train the model with early stopping using validation split - GPU memory efficient."""
         logger.info(f"Training PyTorch neural network on {len(X):,} samples with batch size {self.batch_size:,}")
 
         # Split into train/validation
@@ -95,18 +95,18 @@ class MiniBatchLogisticRegression:
 
         logger.info(f"Train: {len(X_train):,}, Validation: {len(X_val):,}")
 
-        # Convert to tensors
-        X_train_tensor = torch.FloatTensor(X_train).to(self.device)
-        y_train_tensor = torch.FloatTensor(y_train).unsqueeze(1).to(self.device)
-        X_val_tensor = torch.FloatTensor(X_val).to(self.device)
-        y_val_tensor = torch.FloatTensor(y_val).unsqueeze(1).to(self.device)
+        # Convert to CPU tensors first
+        X_train_tensor = torch.FloatTensor(X_train)  # Keep on CPU
+        y_train_tensor = torch.FloatTensor(y_train).unsqueeze(1)  # Keep on CPU
+        X_val_tensor = torch.FloatTensor(X_val)  # Keep on CPU
+        y_val_tensor = torch.FloatTensor(y_val).unsqueeze(1)  # Keep on CPU
 
         # Create datasets and dataloaders
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        train_dataloader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, pin_memory=True)
 
         val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
-        val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
 
         for epoch in range(self.epochs):
             self.model.train()
@@ -114,6 +114,10 @@ class MiniBatchLogisticRegression:
             train_batches = 0
 
             for batch_X, batch_y in train_dataloader:
+                # Move only the current batch to GPU
+                batch_X = batch_X.to(self.device, non_blocking=True)
+                batch_y = batch_y.to(self.device, non_blocking=True)
+
                 self.optimizer.zero_grad()
                 outputs = self.model(batch_X)
                 loss = self.criterion(outputs, batch_y)
@@ -122,6 +126,11 @@ class MiniBatchLogisticRegression:
 
                 train_loss += loss.item()
                 train_batches += 1
+
+                # Clear GPU memory after each batch
+                del batch_X, batch_y, outputs, loss
+                if self.device == 'cuda':
+                    torch.cuda.empty_cache()
 
             avg_train_loss = train_loss / train_batches
 
@@ -134,6 +143,10 @@ class MiniBatchLogisticRegression:
 
             with torch.no_grad():
                 for batch_X, batch_y in val_dataloader:
+                    # Move only the current batch to GPU
+                    batch_X = batch_X.to(self.device, non_blocking=True)
+                    batch_y = batch_y.to(self.device, non_blocking=True)
+
                     outputs = self.model(batch_X)
                     loss = self.criterion(outputs, batch_y)
                     val_loss += loss.item()
@@ -141,6 +154,11 @@ class MiniBatchLogisticRegression:
 
                     all_val_preds.extend(outputs.cpu().numpy().flatten())
                     all_val_targets.extend(batch_y.cpu().numpy().flatten())
+
+                    # Clear GPU memory after each batch
+                    del batch_X, batch_y, outputs, loss
+                    if self.device == 'cuda':
+                        torch.cuda.empty_cache()
 
             avg_val_loss = val_loss / val_batches
 
@@ -176,10 +194,16 @@ class MiniBatchLogisticRegression:
         with torch.no_grad():
             for i in range(0, num_samples, batch_size):
                 end_idx = min(i + batch_size, num_samples)
+                # Keep batch creation on CPU, then move to GPU
                 batch_X = torch.FloatTensor(X[i:end_idx]).to(self.device)
 
                 batch_pred = self.model(batch_X).cpu().numpy().flatten()
                 predictions.extend(batch_pred)
+
+                # Clear GPU memory after each batch
+                del batch_X
+                if self.device == 'cuda':
+                    torch.cuda.empty_cache()
 
         predictions = np.array(predictions)
         return np.column_stack([1 - predictions, predictions])
@@ -441,6 +465,24 @@ def run_link_prediction_full_data(
     logger.info(
         f'Generated {len(walks)} walks in {batch_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
 
+    walk_length_counts = {}
+    for length in walk_lengths:
+        walk_length_counts[length] = walk_length_counts.get(length, 0) + 1
+
+    logger.info(f"Walk length distribution:")
+    for length in sorted(walk_length_counts.keys()):
+        count = walk_length_counts[length]
+        percentage = (count / len(walk_lengths)) * 100
+        logger.info(f"  Length {length}: {count:,} walks ({percentage:.2f}%)")
+
+    zero_length_walks = walk_length_counts.get(0, 0)
+    one_length_walks = walk_length_counts.get(1, 0)
+
+    if zero_length_walks > 0:
+        logger.warning(f"Found {zero_length_walks:,} walks with length 0!")
+    if one_length_walks > 0:
+        logger.warning(f"Found {one_length_walks:,} walks with length 1!")
+
     # Remove padding from walks using actual walk lengths
     clean_walks = []
     for walk, length in zip(walks, walk_lengths):
@@ -553,6 +595,24 @@ def run_link_prediction_streaming_window(
 
         logger.info(
             f'Generated {len(walks)} walks in {streaming_walk_duration:.2f} seconds. Mean walk length: {np.mean(walk_lengths)}.')
+
+        walk_length_counts = {}
+        for length in walk_lengths:
+            walk_length_counts[length] = walk_length_counts.get(length, 0) + 1
+
+        logger.info(f"Walk length distribution:")
+        for length in sorted(walk_length_counts.keys()):
+            count = walk_length_counts[length]
+            percentage = (count / len(walk_lengths)) * 100
+            logger.info(f"  Length {length}: {count:,} walks ({percentage:.2f}%)")
+
+        zero_length_walks = walk_length_counts.get(0, 0)
+        one_length_walks = walk_length_counts.get(1, 0)
+
+        if zero_length_walks > 0:
+            logger.warning(f"Found {zero_length_walks:,} walks with length 0!")
+        if one_length_walks > 0:
+            logger.warning(f"Found {one_length_walks:,} walks with length 1!")
 
         # Clean walks (remove padding)
         clean_walks = []
