@@ -171,7 +171,7 @@ def evaluate_link_prediction(
             edge_features.append(hadamard_feature)
 
     if missing_embeddings > 0:
-        logger.warning(f"Total missing embeddings: {missing_embeddings}")
+        logger.warning(f"Total missing embeddings: {missing_embeddings} / {len(all_sources)}")
 
     edge_features = np.array(edge_features)
 
