@@ -285,10 +285,15 @@ class MiniBatchLogisticRegression:
         return (proba > 0.5).astype(int)
 
 
-def split_dataset(data_file_path, train_percentage):
+def split_dataset(data_file_path, data_format, train_percentage):
     """Split dataset based on temporal ordering."""
     logger.info(f"Loading dataset from {data_file_path}")
-    df = pd.read_parquet(data_file_path)
+
+    if data_format == 'parquet':
+        df = pd.read_parquet(data_file_path)
+    else:
+        df = pd.read_csv(data_file_path)
+
     timestamps = df['ts']
 
     # Get unique timestamps (already sorted)
@@ -768,6 +773,7 @@ def save_results(results, output_path):
 
 def run_link_prediction_experiments(
         data_file_path,
+        data_format,
         is_directed,
         batch_ts_size,
         sliding_window_duration,
@@ -786,7 +792,7 @@ def run_link_prediction_experiments(
     logger.info("Starting link prediction experiments")
 
     # Split dataset
-    train_df, test_df = split_dataset(data_file_path, embedding_training_percentage)
+    train_df, test_df = split_dataset(data_file_path, data_format, embedding_training_percentage)
 
     # Convert to NumPy arrays immediately
     train_sources = train_df['u'].to_numpy()
@@ -943,6 +949,9 @@ if __name__ == '__main__':
     parser.add_argument('--link_prediction_use_gpu', action='store_true',
                         help='Enable GPU acceleration for link prediction')
 
+    parser.add_argument('--data_format', type=str, default='parquet',
+                        help='Data type (CSV or Parquet)')
+
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Directory to save results (optional)')
 
@@ -950,6 +959,7 @@ if __name__ == '__main__':
 
     run_link_prediction_experiments(
         args.data_file_path,
+        args.data_format,
         args.is_directed,
         args.batch_ts_size,
         args.sliding_window_duration,
