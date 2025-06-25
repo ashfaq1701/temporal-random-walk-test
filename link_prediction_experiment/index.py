@@ -4,6 +4,8 @@ import logging
 import time
 from pathlib import Path
 
+import warnings
+from contextlib import contextmanager
 import numpy as np
 import pandas as pd
 import torch
@@ -18,6 +20,35 @@ from torch.utils.data import DataLoader, TensorDataset
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def suppress_word2vec_output():
+    """Context manager to suppress Word2Vec verbose output."""
+    # Save current logging levels
+    gensim_logger = logging.getLogger('gensim')
+    word2vec_logger = logging.getLogger('gensim.models.word2vec')
+    kv_logger = logging.getLogger('gensim.models.keyedvectors')
+
+    original_gensim_level = gensim_logger.level
+    original_word2vec_level = word2vec_logger.level
+    original_kv_level = kv_logger.level
+
+    try:
+        # Suppress logging
+        gensim_logger.setLevel(logging.ERROR)
+        word2vec_logger.setLevel(logging.ERROR)
+        kv_logger.setLevel(logging.ERROR)
+
+        # Also suppress warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            yield
+    finally:
+        # Restore original levels
+        gensim_logger.setLevel(original_gensim_level)
+        word2vec_logger.setLevel(original_word2vec_level)
+        kv_logger.setLevel(original_kv_level)
 
 
 def split_train_test(X, y, train_percentage):
@@ -55,7 +86,7 @@ class EarlyStopping:
 
 class MiniBatchLogisticRegression:
     def __init__(
-            self, input_dim, batch_size=2_000_000, learning_rate=0.001,
+            self, input_dim, batch_size=1_000_000, learning_rate=0.001,
             epochs=20, device='cpu', patience=3, validation_split=0.1, use_amp=True
     ):
         self.device = device
@@ -371,7 +402,7 @@ def evaluate_link_prediction(
         node_embeddings,
         link_prediction_training_percentage,
         device,
-        batch_size=2_000_000
+        batch_size=1_000_000
 ):
     """Evaluate link prediction using Hadamard product and neural network."""
     logger.info("Starting link prediction evaluation")
@@ -536,16 +567,18 @@ def run_link_prediction_full_data(
     logger.info(f"Training Word2Vec on {len(clean_walks)} clean walks")
 
     batch_node_embedding_start_time = time.time()
-    # Train Word2Vec model
-    model = Word2Vec(
-        sentences=clean_walks,
-        vector_size=embedding_dim,
-        window=10,
-        min_count=1,
-        workers=4,
-        sg=1,
-        seed=seed
-    )
+
+    with suppress_word2vec_output():
+        # Train Word2Vec model
+        model = Word2Vec(
+            sentences=clean_walks,
+            vector_size=embedding_dim,
+            window=10,
+            min_count=1,
+            workers=4,
+            sg=1,
+            seed=seed
+        )
 
     node_embeddings = {}
     for node in model.wv.index_to_key:
@@ -665,15 +698,16 @@ def run_link_prediction_streaming_window(
 
         # Train Word2Vec on current batch
         try:
-            batch_model = Word2Vec(
-                sentences=clean_walks,
-                vector_size=embedding_dim,
-                window=10,
-                min_count=1,
-                workers=4,
-                sg=1,
-                seed=seed
-            )
+            with suppress_word2vec_output():
+                batch_model = Word2Vec(
+                    sentences=clean_walks,
+                    vector_size=embedding_dim,
+                    window=10,
+                    min_count=1,
+                    workers=4,
+                    sg=1,
+                    seed=seed
+                )
 
             # Extract batch embeddings
             batch_embeddings = {}
