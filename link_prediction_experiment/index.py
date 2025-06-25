@@ -765,40 +765,6 @@ def run_link_prediction_experiments(
     # Sample negative edges - returns NumPy arrays
     negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets)
 
-    # Run full data approach
-    logger.info("=" * 50)
-    logger.info("FULL DATA APPROACH")
-    logger.info("=" * 50)
-
-    full_start_time = time.time()
-    full_link_prediction_results = run_link_prediction_full_data(
-        train_sources,
-        train_targets,
-        train_timestamps,
-        test_sources,
-        test_targets,
-        negative_sources,
-        negative_targets,
-        is_directed,
-        walk_length,
-        num_walks_per_node,
-        embedding_dim,
-        link_prediction_training_percentage,
-        full_embedding_use_gpu,
-        link_prediction_use_gpu
-    )
-    full_duration = time.time() - full_start_time
-    full_link_prediction_results['total_time'] = full_duration
-
-    print(f"\nFull Link Prediction Results:")
-    print(f"AUC: {full_link_prediction_results['auc']:.4f}")
-    print(f"Accuracy: {full_link_prediction_results['accuracy']:.4f}")
-    print(f"Precision: {full_link_prediction_results['precision']:.4f}")
-    print(f"Recall: {full_link_prediction_results['recall']:.4f}")
-    print(f"F1-Score: {full_link_prediction_results['f1_score']:.4f}")
-    print(f"Embedding Coverage: {full_link_prediction_results['embedding_coverage']:.4f}")
-    print(f"Total Time: {full_duration:.2f}s")
-
     # Run streaming approach
     logger.info("=" * 50)
     logger.info("STREAMING WINDOW APPROACH")
@@ -835,6 +801,40 @@ def run_link_prediction_experiments(
     print(f"F1-Score: {streaming_link_prediction_results['f1_score']:.4f}")
     print(f"Embedding Coverage: {streaming_link_prediction_results['embedding_coverage']:.4f}")
     print(f"Total Time: {streaming_duration:.2f}s")
+
+    # Run full data approach
+    logger.info("=" * 50)
+    logger.info("FULL DATA APPROACH")
+    logger.info("=" * 50)
+
+    full_start_time = time.time()
+    full_link_prediction_results = run_link_prediction_full_data(
+        train_sources,
+        train_targets,
+        train_timestamps,
+        test_sources,
+        test_targets,
+        negative_sources,
+        negative_targets,
+        is_directed,
+        walk_length,
+        num_walks_per_node,
+        embedding_dim,
+        link_prediction_training_percentage,
+        full_embedding_use_gpu,
+        link_prediction_use_gpu
+    )
+    full_duration = time.time() - full_start_time
+    full_link_prediction_results['total_time'] = full_duration
+
+    print(f"\nFull Link Prediction Results:")
+    print(f"AUC: {full_link_prediction_results['auc']:.4f}")
+    print(f"Accuracy: {full_link_prediction_results['accuracy']:.4f}")
+    print(f"Precision: {full_link_prediction_results['precision']:.4f}")
+    print(f"Recall: {full_link_prediction_results['recall']:.4f}")
+    print(f"F1-Score: {full_link_prediction_results['f1_score']:.4f}")
+    print(f"Embedding Coverage: {full_link_prediction_results['embedding_coverage']:.4f}")
+    print(f"Total Time: {full_duration:.2f}s")
 
     # Comparison
     print(f"\n" + "=" * 50)
