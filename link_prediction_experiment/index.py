@@ -634,29 +634,43 @@ def run_link_prediction_streaming_window(
     # Global embedding store (dictionary)
     global_embeddings = {}
 
-    # Create batches by batch_ts_size - ensure we use NumPy arrays
-    unique_timestamps = np.sort(np.unique(train_timestamps))
-    num_batches = len(unique_timestamps) // batch_ts_size
+    # FIXED: Create batches by time duration instead of timestamp count
+    min_timestamp = np.min(train_timestamps)
+    max_timestamp = np.max(train_timestamps)
+    total_time_range = max_timestamp - min_timestamp
 
-    logger.info(f"Processing {num_batches} batches with batch_ts_size={batch_ts_size}")
+    # Calculate number of batches based on batch_ts_size (treating it as time duration)
+    num_batches = int(np.ceil(total_time_range / batch_ts_size))
+
+    logger.info(f"Time range: {min_timestamp} to {max_timestamp} (total: {total_time_range:,})")
+    logger.info(f"Processing {num_batches} batches with batch_duration={batch_ts_size:,}")
 
     total_start_time = time.time()
 
     for batch_idx in range(num_batches):
         batch_start_time = time.time()
 
-        # Get timestamp range for current batch
-        start_ts_idx = batch_idx * batch_ts_size
-        end_ts_idx = min((batch_idx + 1) * batch_ts_size, len(unique_timestamps))
-        batch_timestamps = unique_timestamps[start_ts_idx:end_ts_idx]
+        # FIXED: Define time-based batch boundaries
+        batch_start_ts = min_timestamp + (batch_idx * batch_ts_size)
+        batch_end_ts = min_timestamp + ((batch_idx + 1) * batch_ts_size)
 
-        # Filter edges for current batch - use NumPy boolean indexing
-        batch_mask = np.isin(train_timestamps, batch_timestamps)
+        # Handle last batch edge case
+        if batch_idx == num_batches - 1:
+            batch_end_ts = max_timestamp + 1  # Include the last timestamp
+
+        # Filter edges by time range instead
+        batch_mask = (train_timestamps >= batch_start_ts) & (train_timestamps < batch_end_ts)
         batch_sources = train_sources[batch_mask]
         batch_targets = train_targets[batch_mask]
         batch_ts = train_timestamps[batch_mask]
 
-        logger.info(f"Batch {batch_idx + 1}/{num_batches}: {len(batch_sources)} edges")
+        # Skip empty batches
+        if len(batch_sources) == 0:
+            logger.info(f"Batch {batch_idx + 1}/{num_batches}: No edges in this time range, skipping")
+            continue
+
+        logger.info(f"Batch {batch_idx + 1}/{num_batches}: {len(batch_sources):,} edges "
+                    f"(time range: {batch_start_ts} to {batch_end_ts - 1})")
 
         # Add batch to temporal_random_walk
         logger.info(f'Adding {len(batch_sources)} edges in temporal random walk instance')
