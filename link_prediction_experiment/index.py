@@ -9,7 +9,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast
 from torch.cuda.amp import GradScaler
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
@@ -81,12 +80,11 @@ class MiniBatchLogisticRegression:
             nn.ReLU(),
             nn.Dropout(0.1),
 
-            nn.Linear(16, 1),
-            nn.Sigmoid()
+            nn.Linear(16, 1)  # REMOVED: nn.Sigmoid() - will be handled by BCEWithLogitsLoss
         ).to(device)
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.criterion = nn.BCELoss()
+        self.criterion = nn.BCEWithLogitsLoss()
         self.early_stopping = EarlyStopping(patience=patience)
 
         # Initialize mixed precision scaler
@@ -134,8 +132,7 @@ class MiniBatchLogisticRegression:
                 self.optimizer.zero_grad()
 
                 if self.use_amp:
-                    # Mixed precision training
-                    with autocast():
+                    with torch.amp.autocast('cuda'):
                         outputs = self.model(batch_X)
                         loss = self.criterion(outputs, batch_y)
 
@@ -174,8 +171,7 @@ class MiniBatchLogisticRegression:
                     batch_y = batch_y.to(self.device, non_blocking=True)
 
                     if self.use_amp:
-                        # Mixed precision inference
-                        with autocast():
+                        with torch.amp.autocast('cuda'):
                             outputs = self.model(batch_X)
                             loss = self.criterion(outputs, batch_y)
                     else:
@@ -186,7 +182,8 @@ class MiniBatchLogisticRegression:
                     val_loss += loss.item()
                     val_batches += 1
 
-                    all_val_preds.extend(outputs.cpu().numpy().flatten())
+                    probs = torch.sigmoid(outputs).cpu().numpy().flatten()
+                    all_val_preds.extend(probs)
                     all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
                     # Clear GPU memory after each batch
@@ -215,6 +212,7 @@ class MiniBatchLogisticRegression:
 
         logger.info("Training completed")
 
+
     def predict_proba(self, X):
         """Predict probabilities using mini-batches to avoid memory issues."""
         self.model.eval()
@@ -231,22 +229,24 @@ class MiniBatchLogisticRegression:
                 batch_X = torch.FloatTensor(X[i:end_idx]).to(self.device)
 
                 if self.use_amp:
-                    # Mixed precision inference
-                    with autocast():
-                        batch_pred = self.model(batch_X).cpu().numpy().flatten()
+                    with torch.amp.autocast('cuda'):
+                        batch_logits = self.model(batch_X)
+                        # FIXED: Apply sigmoid to convert logits to probabilities
+                        batch_pred = torch.sigmoid(batch_logits).cpu().numpy().flatten()
                 else:
-                    # Standard FP32 inference
-                    batch_pred = self.model(batch_X).cpu().numpy().flatten()
+                    batch_logits = self.model(batch_X)
+                    batch_pred = torch.sigmoid(batch_logits).cpu().numpy().flatten()
 
                 predictions.extend(batch_pred)
 
                 # Clear GPU memory after each batch
-                del batch_X
+                del batch_X, batch_logits
                 if self.device == 'cuda':
                     torch.cuda.empty_cache()
 
         predictions = np.array(predictions)
         return np.column_stack([1 - predictions, predictions])
+
 
     def predict(self, X):
         """Make binary predictions."""
