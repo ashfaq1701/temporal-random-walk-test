@@ -56,7 +56,7 @@ class EarlyStopping:
 class MiniBatchLogisticRegression:
     def __init__(
             self, input_dim, batch_size=1_000_000, learning_rate=0.001,
-            epochs=10, device='cpu', patience=3, validation_split=0.1, use_amp=True
+            epochs=20, device='cpu', patience=3, validation_split=0.1, use_amp=True
     ):
         self.device = device
         self.batch_size = batch_size
@@ -432,7 +432,7 @@ def evaluate_link_prediction(
         input_dim=embedding_dim,
         batch_size=batch_size,
         learning_rate=0.001,
-        epochs=50,
+        epochs=20,
         device=device,
         patience=10,
         validation_split=0.15
