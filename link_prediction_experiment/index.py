@@ -825,6 +825,14 @@ def run_link_prediction_experiments(
     test_targets = test_df['i'].to_numpy()
     test_timestamps = test_df['ts'].to_numpy()
 
+    train_nodes = set(train_sources).union(set(train_targets))
+    test_nodes = set(test_sources).union(set(test_targets))
+    nodes_in_both = test_nodes.intersection(train_nodes)
+    nodes_only_in_test = test_nodes - train_nodes
+
+    print(f"Test nodes present in training: {len(nodes_in_both):,} ({len(nodes_in_both) / len(test_nodes) * 100:.1f}%)")
+    print(f"Test nodes absent from training: {len(nodes_only_in_test):,} ({len(nodes_only_in_test) / len(test_nodes) * 100:.1f}%)")
+
     # Sample negative edges - returns NumPy arrays
     negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets)
 
