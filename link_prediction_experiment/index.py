@@ -522,6 +522,7 @@ def run_link_prediction_full_data(
         n_epochs,
         walk_use_gpu,
         link_prediction_use_gpu,
+        word2vec_n_workers,
         seed=42
 ):
     """Run link prediction using full dataset approach."""
@@ -582,7 +583,7 @@ def run_link_prediction_full_data(
             vector_size=embedding_dim,
             window=10,
             min_count=1,
-            workers=4,
+            workers=word2vec_n_workers,
             sg=1,
             seed=seed
         )
@@ -627,6 +628,7 @@ def run_link_prediction_streaming_window(
         n_epochs,
         walk_use_gpu,
         link_prediction_use_gpu,
+        word2vec_n_workers,
         seed=42
 ):
     """Run link prediction using streaming window approach."""
@@ -727,7 +729,7 @@ def run_link_prediction_streaming_window(
                     vector_size=embedding_dim,
                     window=10,
                     min_count=1,
-                    workers=4,
+                    workers=word2vec_n_workers,
                     sg=1,
                     seed=seed
                 )
@@ -806,6 +808,7 @@ def run_link_prediction_experiments(
         full_embedding_use_gpu,
         incremental_embedding_use_gpu,
         link_prediction_use_gpu,
+        word2vec_n_workers,
         output_dir=None
 ):
     """Run both full and streaming link prediction experiments."""
@@ -849,7 +852,8 @@ def run_link_prediction_experiments(
         link_prediction_training_percentage,
         n_epochs,
         incremental_embedding_use_gpu,
-        link_prediction_use_gpu
+        link_prediction_use_gpu,
+        word2vec_n_workers
     )
     streaming_duration = time.time() - streaming_start_time
     streaming_link_prediction_results['total_time'] = streaming_duration
@@ -884,7 +888,8 @@ def run_link_prediction_experiments(
         link_prediction_training_percentage,
         n_epochs,
         full_embedding_use_gpu,
-        link_prediction_use_gpu
+        link_prediction_use_gpu,
+        word2vec_n_workers
     )
     full_duration = time.time() - full_start_time
     full_link_prediction_results['total_time'] = full_duration
@@ -976,6 +981,8 @@ if __name__ == '__main__':
     parser.add_argument('--data_format', type=str, default='parquet',
                         help='Data type (CSV or Parquet)')
 
+    parser.add_argument('--word2vec_n_workers', type=int, default=10, help='Number of workers for word2vec')
+
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Directory to save results (optional)')
 
@@ -997,5 +1004,6 @@ if __name__ == '__main__':
         args.full_embedding_use_gpu,
         args.incremental_embedding_use_gpu,
         args.link_prediction_use_gpu,
+        args.word2vec_n_workers,
         args.output_dir
     )
