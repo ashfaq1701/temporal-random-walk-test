@@ -148,7 +148,7 @@ class MiniBatchLogisticRegression:
         val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
         val_dataloader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
 
-        logger.info('Starting training ...')
+        logger.info('Starting training for {self.epochs} epochs ...')
 
         for epoch in range(self.epochs):
             self.model.train()
@@ -406,6 +406,7 @@ def evaluate_link_prediction(
         negative_targets,
         node_embeddings,
         link_prediction_training_percentage,
+        n_epochs,
         device,
         batch_size=1_000_000
 ):
@@ -468,7 +469,7 @@ def evaluate_link_prediction(
         input_dim=embedding_dim,
         batch_size=batch_size,
         learning_rate=0.001,
-        epochs=20,
+        epochs=n_epochs,
         device=device,
         patience=10,
         validation_split=0.15
@@ -518,6 +519,7 @@ def run_link_prediction_full_data(
         num_walks_per_node,
         embedding_dim,
         link_prediction_training_percentage,
+        n_epochs,
         walk_use_gpu,
         link_prediction_use_gpu,
         seed=42
@@ -601,6 +603,7 @@ def run_link_prediction_full_data(
         negative_targets,
         node_embeddings,
         link_prediction_training_percentage,
+        n_epochs,
         device
     )
 
@@ -621,6 +624,7 @@ def run_link_prediction_streaming_window(
         weighted_sum_alpha,
         embedding_dim,
         link_prediction_training_percentage,
+        n_epochs,
         walk_use_gpu,
         link_prediction_use_gpu,
         seed=42
@@ -771,6 +775,7 @@ def run_link_prediction_streaming_window(
         negative_targets,
         global_embeddings,
         link_prediction_training_percentage,
+        n_epochs,
         device
     )
 
@@ -797,6 +802,7 @@ def run_link_prediction_experiments(
         embedding_dim,
         embedding_training_percentage,
         link_prediction_training_percentage,
+        n_epochs,
         full_embedding_use_gpu,
         incremental_embedding_use_gpu,
         link_prediction_use_gpu,
@@ -841,6 +847,7 @@ def run_link_prediction_experiments(
         weighted_sum_alpha,
         embedding_dim,
         link_prediction_training_percentage,
+        n_epochs,
         incremental_embedding_use_gpu,
         link_prediction_use_gpu
     )
@@ -875,6 +882,7 @@ def run_link_prediction_experiments(
         num_walks_per_node,
         embedding_dim,
         link_prediction_training_percentage,
+        n_epochs,
         full_embedding_use_gpu,
         link_prediction_use_gpu
     )
@@ -954,6 +962,8 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
 
+    parser.add_argument('--n_epochs', type=int, default=15, help='Number of epochs')
+
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
                         help='Enable GPU acceleration for full embedding')
 
@@ -983,6 +993,7 @@ if __name__ == '__main__':
         args.embedding_dim,
         args.embedding_training_percentage,
         args.link_prediction_training_percentage,
+        args.n_epochs,
         args.full_embedding_use_gpu,
         args.incremental_embedding_use_gpu,
         args.link_prediction_use_gpu,
