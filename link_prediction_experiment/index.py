@@ -830,8 +830,8 @@ def run_link_prediction_experiments(
     nodes_in_both = test_nodes.intersection(train_nodes)
     nodes_only_in_test = test_nodes - train_nodes
 
-    print(f"Test nodes present in training: {len(nodes_in_both):,} ({len(nodes_in_both) / len(test_nodes) * 100:.1f}%)")
-    print(f"Test nodes absent from training: {len(nodes_only_in_test):,} ({len(nodes_only_in_test) / len(test_nodes) * 100:.1f}%)")
+    logger.info(f"Test nodes present in training: {len(nodes_in_both):,} ({len(nodes_in_both) / len(test_nodes) * 100:.1f}%)")
+    logger.info(f"Test nodes absent from training: {len(nodes_only_in_test):,} ({len(nodes_only_in_test) / len(test_nodes) * 100:.1f}%)")
 
     # Sample negative edges - returns NumPy arrays
     negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets)
