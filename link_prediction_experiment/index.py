@@ -962,7 +962,7 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
 
-    parser.add_argument('--n_epochs', type=int, default=15, help='Number of epochs')
+    parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs')
 
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
                         help='Enable GPU acceleration for full embedding')
