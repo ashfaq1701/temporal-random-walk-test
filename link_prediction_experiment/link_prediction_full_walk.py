@@ -403,7 +403,7 @@ def evaluate_link_prediction(
     edge_features = np.zeros((len(all_sources), embedding_dim), dtype=np.float32)
 
     # Vectorized approach where possible
-    logger.info(f"Creating ${edge_op} product features...")
+    logger.info(f"Creating {edge_op} product features...")
 
     for i, (src, tgt) in enumerate(zip(all_sources, all_targets)):
         src_emb = node_embeddings.get(src, np.zeros(embedding_dim))
