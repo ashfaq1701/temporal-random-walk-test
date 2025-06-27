@@ -331,12 +331,11 @@ def split_dataset(data_file_path, train_percentage):
     return train_df, test_df
 
 
-def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
+def sample_negative_edges(sources, targets, all_nodes, num_negative_samples, seed=42):
     """Sample negative edges efficiently for large datasets - returns NumPy arrays."""
     np.random.seed(seed)
 
     existing_edges = set(zip(sources, targets))
-    all_nodes = np.array(list(set(sources).union(set(targets))))
 
     # Scale batch size based on density
     batch_size = 1000000  # 1M for medium density
@@ -628,6 +627,8 @@ def run_link_prediction_experiments(
 
     train_nodes = set(train_sources).union(set(train_targets))
     test_nodes = set(test_sources).union(set(test_targets))
+    all_nodes = set(train_nodes).union(set(test_nodes))
+
     nodes_in_both = test_nodes.intersection(train_nodes)
     nodes_only_in_test = test_nodes - train_nodes
 
@@ -635,7 +636,7 @@ def run_link_prediction_experiments(
     logger.info(f"Test nodes absent from training: {len(nodes_only_in_test):,} ({len(nodes_only_in_test) / len(test_nodes) * 100:.1f}%)")
 
     # Sample negative edges - returns NumPy arrays
-    negative_sources, negative_targets = sample_negative_edges(train_sources, train_targets, len(test_sources))
+    negative_sources, negative_targets = sample_negative_edges(train_sources, train_targets, all_nodes, len(test_sources))
 
     # Run full data approach
     logger.info("=" * 50)
