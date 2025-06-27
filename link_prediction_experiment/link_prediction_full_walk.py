@@ -222,16 +222,13 @@ def split_dataset(data_file_path, train_percentage):
     return train_df, test_df
 
 
-def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
+def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
     """Sample negative edges - batch approach avoiding positive edges."""
     np.random.seed(seed)
 
     # Create set of existing positive edges for fast lookup
-    positive_edges = set(zip(test_sources, test_targets))
-    all_nodes = np.array(list(set(test_sources).union(set(test_targets))))
-
-    if num_negative_samples is None:
-        num_negative_samples = len(test_sources)
+    positive_edges = set(zip(sources, targets))
+    all_nodes = np.array(list(set(sources).union(set(targets))))
 
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
 
@@ -359,7 +356,7 @@ def run_full_link_prediction(data_file_path, is_directed, walk_length, num_walks
     test_targets = test_df['i'].to_numpy()
 
     # Sample negative edges
-    negative_sources, negative_targets = sample_negative_edges(test_sources, test_targets)
+    negative_sources, negative_targets = sample_negative_edges(train_sources, train_targets, len(test_sources))
 
     # Create temporal random walk instance
     temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=use_gpu, max_time_capacity=-1)
