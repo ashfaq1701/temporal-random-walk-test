@@ -325,22 +325,11 @@ def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
     existing_edges = set(zip(sources, targets))
     all_nodes = np.array(list(set(sources).union(set(targets))))
 
-    # Calculate density and set appropriate batch size
-    max_possible = len(all_nodes) * (len(all_nodes) - 1)
-    density = len(existing_edges) / max_possible
-
     # Scale batch size based on density
-    if density > 0.7:
-        batch_size = 5000000  # 5M for very dense graphs
-    elif density > 0.3:
-        batch_size = 1000000  # 1M for medium density
-    else:
-        batch_size = 100000  # 100K for sparse graphs
-
-    logger.info(f"Graph density: {density:.4f}, using batch size: {batch_size:,}")
+    batch_size = 1000000  # 1M for medium density
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
 
-    negative_edges = set()
+    negative_edges = []
     attempts = 0
 
     while len(negative_edges) < num_negative_samples:
@@ -366,7 +355,7 @@ def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
 
             # Check chunk against existing edges
             chunk_edges = set(zip(u_chunk, v_chunk)) - existing_edges
-            negative_edges.update(chunk_edges)
+            negative_edges = negative_edges + list(chunk_edges)
 
             # Stop if we have enough
             if len(negative_edges) >= num_negative_samples:
