@@ -1,20 +1,18 @@
 import argparse
-import json
 import logging
 import time
-from pathlib import Path
-
 import warnings
 from contextlib import contextmanager
+
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.amp import GradScaler
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 # Set up logging
@@ -147,10 +145,20 @@ class MiniBatchLogisticRegression:
 
         logger.info(f'Starting training for {self.epochs} epochs ...')
 
+        # Store training history
+        history = {
+            'train_loss': [],
+            'val_loss': [],
+            'train_auc': [],
+            'val_auc': []
+        }
+
         for epoch in range(self.epochs):
             self.model.train()
             train_loss = 0.0
             train_batches = 0
+            all_train_preds = []
+            all_train_targets = []
 
             for batch_X, batch_y in train_dataloader:
                 # Move only the current batch to GPU
@@ -178,12 +186,24 @@ class MiniBatchLogisticRegression:
                 train_loss += loss.item()
                 train_batches += 1
 
+                # Collect training predictions for AUC calculation
+                with torch.no_grad():
+                    train_probs = torch.sigmoid(outputs).cpu().numpy().flatten()
+                    all_train_preds.extend(train_probs)
+                    all_train_targets.extend(batch_y.cpu().numpy().flatten())
+
                 # Clear GPU memory after each batch
                 del batch_X, batch_y, outputs, loss
                 if self.device == 'cuda':
                     torch.cuda.empty_cache()
 
             avg_train_loss = train_loss / train_batches
+
+            # Calculate training AUC
+            try:
+                train_auc = roc_auc_score(all_train_targets, all_train_preds)
+            except:
+                train_auc = 0.0
 
             self.model.eval()
 
@@ -226,10 +246,17 @@ class MiniBatchLogisticRegression:
             except:
                 val_auc = 0.0
 
+            # Store metrics in history
+            history['train_loss'].append(avg_train_loss)
+            history['val_loss'].append(avg_val_loss)
+            history['train_auc'].append(train_auc)
+            history['val_auc'].append(val_auc)
+
             # Log progress
             logger.info(f"Epoch {epoch + 1:3d}/{self.epochs}: "
                         f"Train Loss: {avg_train_loss:.4f}, "
                         f"Val Loss: {avg_val_loss:.4f}, "
+                        f"Train AUC: {train_auc:.4f}, "
                         f"Val AUC: {val_auc:.4f}")
 
             # Early stopping check
@@ -239,6 +266,7 @@ class MiniBatchLogisticRegression:
                 break
 
         logger.info("Training completed")
+        return history
 
 
     def predict_proba(self, X):
@@ -444,7 +472,7 @@ def evaluate_link_prediction(
     )
 
     # Train the model
-    classifier.fit(X_train, y_train)
+    history = classifier.fit(X_train, y_train)
 
     # Make predictions
     logger.info("Making predictions...")
@@ -464,8 +492,7 @@ def evaluate_link_prediction(
         'precision': precision,
         'recall': recall,
         'f1_score': f1,
-        'num_positive_edges': len(test_sources),
-        'num_negative_edges': len(negative_sources)
+        'training_history': history
     }
 
     logger.info(f"Link prediction completed - AUC: {auc:.4f}, Accuracy: {accuracy:.4f}")
