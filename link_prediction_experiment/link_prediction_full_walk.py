@@ -87,8 +87,17 @@ class MiniBatchLogisticRegression:
         self.epochs = epochs
         self.validation_split = validation_split
 
+        hidden_dim1 = max(64, input_dim // 2)
+        hidden_dim2 = max(32, input_dim // 4)
+
         self.model = nn.Sequential(
-            nn.Linear(input_dim, 1)
+            nn.Linear(input_dim, hidden_dim1),
+            nn.ReLU(),
+            nn.Linear(hidden_dim1, hidden_dim2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim2, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1)
         ).to(device)
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
