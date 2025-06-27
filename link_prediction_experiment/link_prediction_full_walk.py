@@ -93,10 +93,13 @@ class MiniBatchLogisticRegression:
         self.model = nn.Sequential(
             nn.Linear(input_dim, hidden_dim1),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim1, hidden_dim2),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim2, 16),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(16, 1)
         ).to(device)
 

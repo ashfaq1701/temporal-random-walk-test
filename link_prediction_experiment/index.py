@@ -95,8 +95,20 @@ class MiniBatchLogisticRegression:
         self.validation_split = validation_split
         self.use_amp = use_amp and device == 'cuda'  # Only use AMP on CUDA
 
+        hidden_dim1 = max(64, input_dim // 2)
+        hidden_dim2 = max(32, input_dim // 4)
+
         self.model = nn.Sequential(
-            nn.Linear(input_dim, 1)
+            nn.Linear(input_dim, hidden_dim1),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim1, hidden_dim2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim2, 16),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(16, 1)
         ).to(device)
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
