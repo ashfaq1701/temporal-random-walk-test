@@ -239,7 +239,7 @@ def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
     logger.info(f"Graph density: {density:.4f}, using batch size: {batch_size:,}")
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
 
-    negative_edges = set()
+    negative_edges = []
     attempts = 0
 
     while len(negative_edges) < num_negative_samples:
