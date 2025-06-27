@@ -478,9 +478,7 @@ def evaluate_link_prediction(
         'accuracy': accuracy,
         'precision': precision,
         'recall': recall,
-        'f1_score': f1,
-        'num_positive_edges': len(test_sources),
-        'num_negative_edges': len(negative_sources)
+        'f1_score': f1
     }
 
     logger.info(f"Link prediction completed - AUC: {auc:.4f}, Accuracy: {accuracy:.4f}")
@@ -859,7 +857,6 @@ def run_link_prediction_experiments(
     print(f"Precision: {streaming_link_prediction_results['precision']:.4f}")
     print(f"Recall: {streaming_link_prediction_results['recall']:.4f}")
     print(f"F1-Score: {streaming_link_prediction_results['f1_score']:.4f}")
-    print(f"Embedding Coverage: {streaming_link_prediction_results['embedding_coverage']:.4f}")
     print(f"Total Time: {streaming_duration:.2f}s")
 
     # Run full data approach
@@ -896,7 +893,6 @@ def run_link_prediction_experiments(
     print(f"Precision: {full_link_prediction_results['precision']:.4f}")
     print(f"Recall: {full_link_prediction_results['recall']:.4f}")
     print(f"F1-Score: {full_link_prediction_results['f1_score']:.4f}")
-    print(f"Embedding Coverage: {full_link_prediction_results['embedding_coverage']:.4f}")
     print(f"Total Time: {full_duration:.2f}s")
 
     # Comparison
@@ -906,29 +902,14 @@ def run_link_prediction_experiments(
     auc_diff = streaming_link_prediction_results['auc'] - full_link_prediction_results['auc']
     time_ratio = streaming_duration / full_duration
     print(f"AUC Difference (Streaming - Full): {auc_diff:+.4f}")
-    print(f"Time Ratio (Streaming / Full): {time_ratio:.2f}x")
+    print(f"Runtime Ratio (Streaming / Full): {time_ratio:.2f}x")
 
     # Save results if output directory specified
     if output_dir:
         results = {
             'full_approach': full_link_prediction_results,
             'streaming_approach': streaming_link_prediction_results,
-            'comparison': {
-                'auc_difference': auc_diff,
-                'time_ratio': time_ratio
-            },
-            'parameters': {
-                'data_file_path': data_file_path,
-                'is_directed': is_directed,
-                'batch_ts_size': batch_ts_size,
-                'sliding_window_duration': sliding_window_duration,
-                'weighted_sum_alpha': weighted_sum_alpha,
-                'walk_length': walk_length,
-                'num_walks_per_node': num_walks_per_node,
-                'embedding_dim': embedding_dim,
-                'embedding_training_percentage': embedding_training_percentage,
-                'link_prediction_training_percentage': link_prediction_training_percentage
-            }
+            'runtime_ratio': time_ratio
         }
 
         output_path = Path(output_dir) / "link_prediction_results.json"
