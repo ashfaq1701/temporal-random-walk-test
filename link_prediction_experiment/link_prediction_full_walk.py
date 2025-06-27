@@ -370,10 +370,6 @@ def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
             chunk_edges = set(zip(u_chunk, v_chunk)) - existing_edges
             negative_edges = negative_edges + list(chunk_edges)
 
-            # Stop if we have enough
-            if len(negative_edges) >= num_negative_samples:
-                break
-
         attempts += 1
 
         # Log every 100 attempts
