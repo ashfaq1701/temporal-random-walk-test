@@ -356,6 +356,8 @@ def evaluate_link_prediction(test_sources, test_targets, negative_sources, negat
     y_pred_proba = classifier.predict_proba(X_test)[:, 1]
     y_pred = classifier.predict(X_test)
 
+    print(f"Sum of y_pred: {np.sum(y_pred)}, length of y_pred: {len(y_pred)}")
+
     # Metrics
     auc = roc_auc_score(y_test, y_pred_proba)
     accuracy = accuracy_score(y_test, y_pred)
