@@ -223,10 +223,9 @@ def split_dataset(data_file_path, train_percentage):
 
 
 def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
-    """Sample negative edges."""
+    """Sample negative edges - simplest possible approach."""
     np.random.seed(seed)
 
-    existing_edges = set(zip(test_sources, test_targets))
     all_nodes = np.array(list(set(test_sources).union(set(test_targets))))
 
     if num_negative_samples is None:
@@ -234,25 +233,9 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
 
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
 
-    negative_edges = set()
-    while len(negative_edges) < num_negative_samples:
-        remaining = num_negative_samples - len(negative_edges)
-        batch_size = min(100000, remaining * 10)
-
-        u = np.random.choice(all_nodes, batch_size, replace=True)
-        v = np.random.choice(all_nodes, batch_size, replace=True)
-
-        valid_mask = u != v
-        u_valid, v_valid = u[valid_mask], v[valid_mask]
-
-        chunk_edges = set(zip(u_valid, v_valid)) - existing_edges
-        negative_edges.update(chunk_edges)
-
-    neg_list = list(negative_edges)[:num_negative_samples]
-    neg_array = np.array(neg_list)
-
-    negative_sources = neg_array[:, 0]
-    negative_targets = neg_array[:, 1]
+    # Super simple - just sample random pairs, allow duplicates
+    negative_sources = np.random.choice(all_nodes, num_negative_samples)
+    negative_targets = np.random.choice(all_nodes, num_negative_samples)
 
     logger.info(f"Successfully sampled {len(negative_sources):,} negative edges")
     return negative_sources, negative_targets
