@@ -293,22 +293,11 @@ def split_dataset(data_file_path, train_percentage):
     unique_timestamps = timestamps.unique()
     logger.info(f"Dataset contains {len(df)} edges with {len(unique_timestamps)} unique timestamps")
 
-    # Calculate split point based on train_percentage
-    split_idx = int(len(unique_timestamps) * train_percentage)
-
-    # Get training and testing timestamps
-    train_timestamps = unique_timestamps[:split_idx]
-
-    # Get the last training timestamp
-    last_train_timestamp = train_timestamps[-1]
-
-    # Split dataset at the last occurrence of the training timestamp
-    train_mask = timestamps <= last_train_timestamp
-    test_mask = timestamps > last_train_timestamp
+    train_len = len(df) * train_percentage
 
     # Create training and testing datasets
-    train_df = df[train_mask]
-    test_df = df[test_mask]
+    train_df = df.iloc[:train_len]
+    test_df = df.iloc[train_len:]
 
     logger.info(f"Train set: {len(train_df)} edges, Test set: {len(test_df)} edges")
     return train_df, test_df
@@ -669,7 +658,6 @@ def run_link_prediction_experiments(
     print(f"Precision: {full_link_prediction_results['precision']:.4f}")
     print(f"Recall: {full_link_prediction_results['recall']:.4f}")
     print(f"F1-Score: {full_link_prediction_results['f1_score']:.4f}")
-    print(f"Embedding Coverage: {full_link_prediction_results['embedding_coverage']:.4f}")
     print(f"Total Time: {full_duration:.2f}s")
 
 
