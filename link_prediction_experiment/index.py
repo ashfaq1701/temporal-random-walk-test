@@ -837,7 +837,7 @@ def run_link_prediction_experiments(
 
     train_nodes = set(train_sources).union(set(train_targets))
     test_nodes = set(test_sources).union(set(test_targets))
-    all_nodes = np.array(set(train_nodes).union(set(test_nodes)))
+    all_nodes = np.array(list(set(train_nodes).union(set(test_nodes))))
 
     nodes_in_both = test_nodes.intersection(train_nodes)
     nodes_only_in_test = test_nodes - train_nodes
