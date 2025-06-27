@@ -356,7 +356,7 @@ def sample_negative_edges(sources, targets, num_negative_samples, seed=42):
     all_nodes = np.array(list(set(sources).union(set(targets))))
 
     # Scale batch size based on density
-    batch_size = 1000000  # 1M for medium density
+    batch_size = 5000000
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
 
     negative_edges = []
