@@ -369,9 +369,8 @@ def sample_negative_edges(sources, targets, all_nodes, num_negative_samples, see
         new_negatives = candidate_tuples - existing_set
         negative_edges.extend(list(new_negatives))
 
-        if attempts % 5 == 0:
-            progress = len(negative_edges) / num_negative_samples * 100
-            logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
+        progress = len(negative_edges) / num_negative_samples * 100
+        logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
 
     # Take exactly what we need and convert back to arrays
     final_edges = list(negative_edges)[:num_negative_samples]
