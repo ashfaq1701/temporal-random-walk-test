@@ -445,6 +445,10 @@ def evaluate_link_prediction(
             edge_emb = (src_emb + tgt_emb) / 2
         elif edge_op == 'hadamard':
             edge_emb = src_emb * tgt_emb
+        elif edge_op == 'weighted-l1':
+            edge_emb = np.abs(src_emb - tgt_emb)
+        elif edge_op == 'weighted-l2':
+            edge_emb = (src_emb - tgt_emb) ** 2
         else:
             raise ValueError(f"Unknown edge_op: {edge_op}. Use 'average' or 'hadamard'")
 
