@@ -405,6 +405,7 @@ def evaluate_link_prediction(
         negative_sources,
         negative_targets,
         node_embeddings,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         device,
@@ -432,28 +433,23 @@ def evaluate_link_prediction(
 
     # Pre-allocate feature array for better performance
     edge_features = np.zeros((len(all_sources), embedding_dim), dtype=np.float32)
-    missing_embeddings = 0
 
     # Vectorized approach where possible
-    logger.info("Creating Hadamard product features...")
+    logger.info(f"Creating ${edge_op} product features...")
 
     for i, (src, tgt) in enumerate(zip(all_sources, all_targets)):
-        if src in node_embeddings and tgt in node_embeddings:
-            # Hadamard product of source and target embeddings
-            edge_features[i] = node_embeddings[src] * node_embeddings[tgt]
+        src_emb = node_embeddings.get(src, np.zeros(embedding_dim))
+        tgt_emb = node_embeddings.get(tgt, np.zeros(embedding_dim))
+
+        if edge_op == 'average':
+            edge_emb = (src_emb + tgt_emb) / 2
+        elif edge_op == 'hadamard':
+            edge_emb = src_emb * tgt_emb
         else:
-            # Handle missing embeddings - zero vector already pre-allocated
-            if missing_embeddings < 10:  # Only log first 10 warnings
-                logger.warning(f"Missing embedding for edge ({src}, {tgt})")
-            missing_embeddings += 1
+            raise ValueError(f"Unknown edge_op: {edge_op}. Use 'average' or 'hadamard'")
 
-        # Progress logging for large datasets
-        if (i + 1) % 10_000_000 == 0:
-            progress = (i + 1) / len(all_sources) * 100
-            logger.info(f"Feature creation progress: {progress:.1f}% ({i + 1:,}/{len(all_sources):,})")
-
-    if missing_embeddings > 0:
-        logger.warning(f"Total missing embeddings: {missing_embeddings} / {len(all_sources)}")
+        # Store the edge embedding
+        edge_features[i] = edge_emb
 
     logger.info("Feature creation completed")
 
@@ -497,9 +493,7 @@ def evaluate_link_prediction(
         'recall': recall,
         'f1_score': f1,
         'num_positive_edges': len(test_sources),
-        'num_negative_edges': len(negative_sources),
-        'num_missing_embeddings': missing_embeddings,
-        'embedding_coverage': 1.0 - (missing_embeddings / len(all_sources))
+        'num_negative_edges': len(negative_sources)
     }
 
     logger.info(f"Link prediction completed - AUC: {auc:.4f}, Accuracy: {accuracy:.4f}")
@@ -518,6 +512,7 @@ def run_link_prediction_full_data(
         walk_length,
         num_walks_per_node,
         embedding_dim,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         walk_use_gpu,
@@ -603,6 +598,7 @@ def run_link_prediction_full_data(
         negative_sources,
         negative_targets,
         node_embeddings,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         device
@@ -624,6 +620,7 @@ def run_link_prediction_streaming_window(
         sliding_window_duration,
         weighted_sum_alpha,
         embedding_dim,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         walk_use_gpu,
@@ -776,6 +773,7 @@ def run_link_prediction_streaming_window(
         negative_sources,
         negative_targets,
         global_embeddings,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         device
@@ -802,6 +800,7 @@ def run_link_prediction_experiments(
         walk_length,
         num_walks_per_node,
         embedding_dim,
+        edge_op,
         embedding_training_percentage,
         link_prediction_training_percentage,
         n_epochs,
@@ -857,6 +856,7 @@ def run_link_prediction_experiments(
         sliding_window_duration,
         weighted_sum_alpha,
         embedding_dim,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         incremental_embedding_use_gpu,
@@ -893,6 +893,7 @@ def run_link_prediction_experiments(
         walk_length,
         num_walks_per_node,
         embedding_dim,
+        edge_op,
         link_prediction_training_percentage,
         n_epochs,
         full_embedding_use_gpu,
@@ -974,6 +975,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
+    parser.add_argument('--edge_op', type=str, default='hadamard', help='average, hadamard, weighted-l1 or weighted-l2')
 
     parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs')
 
@@ -1006,6 +1008,7 @@ if __name__ == '__main__':
         args.walk_length,
         args.num_walks_per_node,
         args.embedding_dim,
+        args.edge_op,
         args.embedding_training_percentage,
         args.link_prediction_training_percentage,
         args.n_epochs,
