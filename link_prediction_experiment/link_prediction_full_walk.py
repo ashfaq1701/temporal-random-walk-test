@@ -223,9 +223,11 @@ def split_dataset(data_file_path, train_percentage):
 
 
 def sample_negative_edges(test_sources, test_targets, num_negative_samples=None, seed=42):
-    """Sample negative edges - simplest possible approach."""
+    """Sample negative edges - batch approach avoiding positive edges."""
     np.random.seed(seed)
 
+    # Create set of existing positive edges for fast lookup
+    positive_edges = set(zip(test_sources, test_targets))
     all_nodes = np.array(list(set(test_sources).union(set(test_targets))))
 
     if num_negative_samples is None:
@@ -233,12 +235,26 @@ def sample_negative_edges(test_sources, test_targets, num_negative_samples=None,
 
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
 
-    # Super simple - just sample random pairs, allow duplicates
-    negative_sources = np.random.choice(all_nodes, num_negative_samples)
-    negative_targets = np.random.choice(all_nodes, num_negative_samples)
+    negative_sources = []
+    negative_targets = []
+
+    while len(negative_sources) < num_negative_samples:
+        # Sample in batches
+        batch_size = min(100000, (num_negative_samples - len(negative_sources)) * 3)
+
+        u_batch = np.random.choice(all_nodes, batch_size)
+        v_batch = np.random.choice(all_nodes, batch_size)
+
+        # Check which pairs are NOT in positive edges
+        for u, v in zip(u_batch, v_batch):
+            if len(negative_sources) >= num_negative_samples:
+                break
+            if (u, v) not in positive_edges:
+                negative_sources.append(u)
+                negative_targets.append(v)
 
     logger.info(f"Successfully sampled {len(negative_sources):,} negative edges")
-    return negative_sources, negative_targets
+    return np.array(negative_sources), np.array(negative_targets)
 
 
 def evaluate_link_prediction(test_sources, test_targets, negative_sources, negative_targets,
