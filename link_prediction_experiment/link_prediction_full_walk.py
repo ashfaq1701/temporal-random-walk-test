@@ -203,23 +203,20 @@ class MiniBatchLogisticRegression:
 
 
 def split_dataset(data_file_path, train_percentage):
-    """Split dataset temporally."""
+    """Split dataset randomly."""
     logger.info(f"Loading dataset from {data_file_path}")
     df = pd.read_csv(data_file_path)
 
-    timestamps = df['ts']
-    unique_timestamps = timestamps.unique()
-    logger.info(f"Dataset: {len(df)} edges, {len(unique_timestamps)} unique timestamps")
+    logger.info(f"Dataset: {len(df)} edges")
 
-    split_idx = int(len(unique_timestamps) * train_percentage)
-    train_timestamps = unique_timestamps[:split_idx]
-    last_train_timestamp = train_timestamps[-1]
+    # Simple random split
+    train_size = int(len(df) * train_percentage)
 
-    train_mask = timestamps <= last_train_timestamp
-    test_mask = timestamps > last_train_timestamp
+    # Shuffle the dataframe
+    df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-    train_df = df[train_mask]
-    test_df = df[test_mask]
+    train_df = df_shuffled[:train_size]
+    test_df = df_shuffled[train_size:]
 
     logger.info(f"Train: {len(train_df)} edges, Test: {len(test_df)} edges")
     return train_df, test_df
@@ -442,7 +439,7 @@ def run_full_link_prediction(data_file_path, is_directed, walk_length, num_walks
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Simple Full Walk Link Prediction")
-    parser.add_argument('--data_file_path', type=str, required=True, help='Path to CSV file with u,i,t columns')
+    parser.add_argument('--data_file_path', type=str, required=True, help='Path to CSV file with u,i,ts columns')
     parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', default=True, help='Graph is directed')
     parser.add_argument('--walk_length', type=int, default=80, help='Maximum walk length')
     parser.add_argument('--num_walks_per_node', type=int, default=10, help='Walks per node')
