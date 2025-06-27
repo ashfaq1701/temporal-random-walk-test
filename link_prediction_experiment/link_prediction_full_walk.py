@@ -207,7 +207,7 @@ def split_dataset(data_file_path, train_percentage):
     logger.info(f"Loading dataset from {data_file_path}")
     df = pd.read_csv(data_file_path)
 
-    timestamps = df['t']
+    timestamps = df['ts']
     unique_timestamps = timestamps.unique()
     logger.info(f"Dataset: {len(df)} edges, {len(unique_timestamps)} unique timestamps")
 
@@ -358,7 +358,7 @@ def run_full_link_prediction(data_file_path, is_directed, walk_length, num_walks
 
     train_sources = train_df['u'].to_numpy()
     train_targets = train_df['i'].to_numpy()
-    train_timestamps = train_df['t'].to_numpy()
+    train_timestamps = train_df['ts'].to_numpy()
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
 
