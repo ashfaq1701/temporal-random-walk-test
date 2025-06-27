@@ -282,15 +282,11 @@ class MiniBatchLogisticRegression:
         return (proba > 0.5).astype(int)
 
 
-def split_dataset(data_file_path, data_format, train_percentage):
+def split_dataset(data_file_path, train_percentage):
     """Split dataset based on temporal ordering."""
     logger.info(f"Loading dataset from {data_file_path}")
 
-    if data_format == 'parquet':
-        df = pd.read_parquet(data_file_path)
-    else:
-        df = pd.read_csv(data_file_path)
-
+    df = pd.read_csv(data_file_path)
     timestamps = df['ts']
 
     # Get unique timestamps (already sorted)
@@ -604,7 +600,6 @@ def run_link_prediction_full_data(
 
 def run_link_prediction_experiments(
         data_file_path,
-        data_format,
         is_directed,
         walk_length,
         num_walks_per_node,
@@ -620,7 +615,7 @@ def run_link_prediction_experiments(
     logger.info("Starting link prediction experiments")
 
     # Split dataset
-    train_df, test_df = split_dataset(data_file_path, data_format, embedding_training_percentage)
+    train_df, test_df = split_dataset(data_file_path, embedding_training_percentage)
 
     # Convert to NumPy arrays immediately
     train_sources = train_df['u'].to_numpy()
@@ -717,7 +712,6 @@ if __name__ == '__main__':
 
     run_link_prediction_experiments(
         args.data_file_path,
-        args.data_format,
         args.is_directed,
         args.walk_length,
         args.num_walks_per_node,
