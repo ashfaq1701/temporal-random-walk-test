@@ -293,7 +293,7 @@ def split_dataset(data_file_path, train_percentage):
     unique_timestamps = timestamps.unique()
     logger.info(f"Dataset contains {len(df)} edges with {len(unique_timestamps)} unique timestamps")
 
-    train_len = len(df) * train_percentage
+    train_len = int(len(df) * train_percentage)
 
     # Create training and testing datasets
     train_df = df.iloc[:train_len]
