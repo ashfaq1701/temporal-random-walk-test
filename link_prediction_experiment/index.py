@@ -518,6 +518,7 @@ def run_link_prediction_full_data(
         n_epochs,
         walk_use_gpu,
         link_prediction_use_gpu,
+        n_runs,
         word2vec_n_workers,
         seed=42
 ):
@@ -593,17 +594,40 @@ def run_link_prediction_full_data(
 
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
-    return evaluate_link_prediction(
-        test_sources,
-        test_targets,
-        negative_sources,
-        negative_targets,
-        node_embeddings,
-        edge_op,
-        link_prediction_training_percentage,
-        n_epochs,
-        device
-    )
+    result = {
+        'auc': [],
+        'accuracy': [],
+        'precision': [],
+        'recall': [],
+        'f1_score': [],
+        'training_history': []
+    }
+
+    for i in range(n_runs):
+        print(f"\n" + "=" * 50)
+        print(f"Run {i + 1}/{n_runs}")
+        print(f"\n" + "=" * 50)
+
+        current_result = evaluate_link_prediction(
+            test_sources,
+            test_targets,
+            negative_sources,
+            negative_targets,
+            node_embeddings,
+            edge_op,
+            link_prediction_training_percentage,
+            n_epochs,
+            device
+        )
+
+        result['auc'].append(current_result['auc'])
+        result['accuracy'].append(current_result['accuracy'])
+        result['precision'].append(current_result['precision'])
+        result['recall'].append(current_result['recall'])
+        result['f1_score'].append(current_result['f1_score'])
+        result['training_history'].append(current_result['training_history'])
+
+    return result
 
 
 def run_link_prediction_streaming_window(
@@ -626,6 +650,7 @@ def run_link_prediction_streaming_window(
         n_epochs,
         walk_use_gpu,
         link_prediction_use_gpu,
+        n_runs,
         word2vec_n_workers,
         seed=42
 ):
@@ -768,17 +793,41 @@ def run_link_prediction_streaming_window(
 
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
-    return evaluate_link_prediction(
-        test_sources,
-        test_targets,
-        negative_sources,
-        negative_targets,
-        global_embeddings,
-        edge_op,
-        link_prediction_training_percentage,
-        n_epochs,
-        device
-    )
+    result = {
+        'auc': [],
+        'accuracy': [],
+        'precision': [],
+        'recall': [],
+        'f1_score': [],
+        'training_history': []
+    }
+
+
+    for i in range(n_runs):
+        print(f"\n" + "=" * 50)
+        print(f"Run {i + 1}/{n_runs}")
+        print(f"\n" + "=" * 50)
+
+        current_result = evaluate_link_prediction(
+            test_sources,
+            test_targets,
+            negative_sources,
+            negative_targets,
+            global_embeddings,
+            edge_op,
+            link_prediction_training_percentage,
+            n_epochs,
+            device
+        )
+
+        result['auc'].append(current_result['auc'])
+        result['accuracy'].append(current_result['accuracy'])
+        result['precision'].append(current_result['precision'])
+        result['recall'].append(current_result['recall'])
+        result['f1_score'].append(current_result['f1_score'])
+        result['training_history'].append(current_result['training_history'])
+
+    return result
 
 
 def save_results(results, output_path):
@@ -808,6 +857,7 @@ def run_link_prediction_experiments(
         full_embedding_use_gpu,
         incremental_embedding_use_gpu,
         link_prediction_use_gpu,
+        n_runs,
         word2vec_n_workers,
         output_dir=None
 ):
@@ -864,17 +914,18 @@ def run_link_prediction_experiments(
         n_epochs,
         incremental_embedding_use_gpu,
         link_prediction_use_gpu,
+        n_runs,
         word2vec_n_workers
     )
     streaming_duration = time.time() - streaming_start_time
     streaming_link_prediction_results['total_time'] = streaming_duration
 
     print(f"\nStreaming Link Prediction Results:")
-    print(f"AUC: {streaming_link_prediction_results['auc']:.4f}")
-    print(f"Accuracy: {streaming_link_prediction_results['accuracy']:.4f}")
-    print(f"Precision: {streaming_link_prediction_results['precision']:.4f}")
-    print(f"Recall: {streaming_link_prediction_results['recall']:.4f}")
-    print(f"F1-Score: {streaming_link_prediction_results['f1_score']:.4f}")
+    print(f"AUC: {np.mean(streaming_link_prediction_results['auc']):.4f} ± {np.std(streaming_link_prediction_results['auc']):.4f}")
+    print(f"Accuracy: {np.mean(streaming_link_prediction_results['accuracy']):.4f} ± {np.std(streaming_link_prediction_results['accuracy']):.4f}")
+    print(f"Precision: {np.mean(streaming_link_prediction_results['precision']):.4f} ± {np.std(streaming_link_prediction_results['precision']):.4f}")
+    print(f"Recall: {np.mean(streaming_link_prediction_results['recall']):.4f} ± {np.std(streaming_link_prediction_results['recall']):.4f}")
+    print(f"F1-Score: {np.mean(streaming_link_prediction_results['f1_score']):.4f} ± {np.std(streaming_link_prediction_results['f1_score']):.4f}")
     print(f"Total Time: {streaming_duration:.2f}s")
 
     # Run full data approach
@@ -900,24 +951,25 @@ def run_link_prediction_experiments(
         n_epochs,
         full_embedding_use_gpu,
         link_prediction_use_gpu,
+        n_runs,
         word2vec_n_workers
     )
     full_duration = time.time() - full_start_time
     full_link_prediction_results['total_time'] = full_duration
 
     print(f"\nFull Link Prediction Results:")
-    print(f"AUC: {full_link_prediction_results['auc']:.4f}")
-    print(f"Accuracy: {full_link_prediction_results['accuracy']:.4f}")
-    print(f"Precision: {full_link_prediction_results['precision']:.4f}")
-    print(f"Recall: {full_link_prediction_results['recall']:.4f}")
-    print(f"F1-Score: {full_link_prediction_results['f1_score']:.4f}")
+    print(f"AUC: {np.mean(full_link_prediction_results['auc']):.4f} ± {np.std(full_link_prediction_results['auc']):.4f}")
+    print(f"Accuracy: {np.mean(full_link_prediction_results['accuracy']):.4f} ± {np.std(full_link_prediction_results['accuracy']):.4f}")
+    print(f"Precision: {np.mean(full_link_prediction_results['precision']):.4f} ± {np.std(full_link_prediction_results['precision']):.4f}")
+    print(f"Recall: {np.mean(full_link_prediction_results['recall']):.4f} ± {np.std(full_link_prediction_results['recall']):.4f}")
+    print(f"F1-Score: {np.mean(full_link_prediction_results['f1_score']):.4f} ± {np.std(full_link_prediction_results['f1_score']):.4f}")
     print(f"Total Time: {full_duration:.2f}s")
 
     # Comparison
     print(f"\n" + "=" * 50)
     print("COMPARISON")
     print("=" * 50)
-    auc_diff = streaming_link_prediction_results['auc'] - full_link_prediction_results['auc']
+    auc_diff = np.mean(streaming_link_prediction_results['auc']) - np.mean(full_link_prediction_results['auc'])
     time_ratio = streaming_duration / full_duration
     print(f"AUC Difference (Streaming - Full): {auc_diff:+.4f}")
     print(f"Runtime Ratio (Streaming / Full): {time_ratio:.2f}x")
@@ -963,7 +1015,7 @@ if __name__ == '__main__':
                         help='Dimensionality of node embeddings')
     parser.add_argument('--edge_op', type=str, default='hadamard', help='average, hadamard, weighted-l1 or weighted-l2')
 
-    parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs')
+    parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs')
 
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
                         help='Enable GPU acceleration for full embedding')
@@ -976,6 +1028,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--data_format', type=str, default='parquet',
                         help='Data type (CSV or Parquet)')
+
+    parser.add_argument('--n_runs', type=int, default=3, help='Number of neural network runs')
 
     parser.add_argument('--word2vec_n_workers', type=int, default=10, help='Number of workers for word2vec')
 
@@ -1001,6 +1055,7 @@ if __name__ == '__main__':
         args.full_embedding_use_gpu,
         args.incremental_embedding_use_gpu,
         args.link_prediction_use_gpu,
+        args.n_runs,
         args.word2vec_n_workers,
         args.output_dir
     )
