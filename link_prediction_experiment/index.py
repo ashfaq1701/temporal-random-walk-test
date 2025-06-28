@@ -604,9 +604,9 @@ def run_link_prediction_full_data(
     }
 
     for i in range(n_runs):
-        print(f"\n" + "=" * 50)
-        print(f"Run {i + 1}/{n_runs}")
-        print(f"\n" + "=" * 50)
+        logger.info(f"\n" + "=" * 50)
+        logger.info(f"Run {i + 1}/{n_runs}")
+        logger.info(f"\n" + "=" * 50)
 
         current_result = evaluate_link_prediction(
             test_sources,
@@ -804,9 +804,9 @@ def run_link_prediction_streaming_window(
 
 
     for i in range(n_runs):
-        print(f"\n" + "=" * 50)
-        print(f"Run {i + 1}/{n_runs}")
-        print(f"\n" + "=" * 50)
+        logger.info(f"\n" + "=" * 50)
+        logger.info(f"Run {i + 1}/{n_runs}")
+        logger.info(f"\n" + "=" * 50)
 
         current_result = evaluate_link_prediction(
             test_sources,
@@ -920,13 +920,13 @@ def run_link_prediction_experiments(
     streaming_duration = time.time() - streaming_start_time
     streaming_link_prediction_results['total_time'] = streaming_duration
 
-    print(f"\nStreaming Link Prediction Results:")
-    print(f"AUC: {np.mean(streaming_link_prediction_results['auc']):.4f} ± {np.std(streaming_link_prediction_results['auc']):.4f}")
-    print(f"Accuracy: {np.mean(streaming_link_prediction_results['accuracy']):.4f} ± {np.std(streaming_link_prediction_results['accuracy']):.4f}")
-    print(f"Precision: {np.mean(streaming_link_prediction_results['precision']):.4f} ± {np.std(streaming_link_prediction_results['precision']):.4f}")
-    print(f"Recall: {np.mean(streaming_link_prediction_results['recall']):.4f} ± {np.std(streaming_link_prediction_results['recall']):.4f}")
-    print(f"F1-Score: {np.mean(streaming_link_prediction_results['f1_score']):.4f} ± {np.std(streaming_link_prediction_results['f1_score']):.4f}")
-    print(f"Total Time: {streaming_duration:.2f}s")
+    logger.info(f"\nStreaming Link Prediction Results:")
+    logger.info(f"AUC: {np.mean(streaming_link_prediction_results['auc']):.4f} ± {np.std(streaming_link_prediction_results['auc']):.4f}")
+    logger.info(f"Accuracy: {np.mean(streaming_link_prediction_results['accuracy']):.4f} ± {np.std(streaming_link_prediction_results['accuracy']):.4f}")
+    logger.info(f"Precision: {np.mean(streaming_link_prediction_results['precision']):.4f} ± {np.std(streaming_link_prediction_results['precision']):.4f}")
+    logger.info(f"Recall: {np.mean(streaming_link_prediction_results['recall']):.4f} ± {np.std(streaming_link_prediction_results['recall']):.4f}")
+    logger.info(f"F1-Score: {np.mean(streaming_link_prediction_results['f1_score']):.4f} ± {np.std(streaming_link_prediction_results['f1_score']):.4f}")
+    logger.info(f"Total Time: {streaming_duration:.2f}s")
 
     # Run full data approach
     logger.info("=" * 50)
@@ -957,22 +957,22 @@ def run_link_prediction_experiments(
     full_duration = time.time() - full_start_time
     full_link_prediction_results['total_time'] = full_duration
 
-    print(f"\nFull Link Prediction Results:")
-    print(f"AUC: {np.mean(full_link_prediction_results['auc']):.4f} ± {np.std(full_link_prediction_results['auc']):.4f}")
-    print(f"Accuracy: {np.mean(full_link_prediction_results['accuracy']):.4f} ± {np.std(full_link_prediction_results['accuracy']):.4f}")
-    print(f"Precision: {np.mean(full_link_prediction_results['precision']):.4f} ± {np.std(full_link_prediction_results['precision']):.4f}")
-    print(f"Recall: {np.mean(full_link_prediction_results['recall']):.4f} ± {np.std(full_link_prediction_results['recall']):.4f}")
-    print(f"F1-Score: {np.mean(full_link_prediction_results['f1_score']):.4f} ± {np.std(full_link_prediction_results['f1_score']):.4f}")
-    print(f"Total Time: {full_duration:.2f}s")
+    logger.info(f"\nFull Link Prediction Results:")
+    logger.info(f"AUC: {np.mean(full_link_prediction_results['auc']):.4f} ± {np.std(full_link_prediction_results['auc']):.4f}")
+    logger.info(f"Accuracy: {np.mean(full_link_prediction_results['accuracy']):.4f} ± {np.std(full_link_prediction_results['accuracy']):.4f}")
+    logger.info(f"Precision: {np.mean(full_link_prediction_results['precision']):.4f} ± {np.std(full_link_prediction_results['precision']):.4f}")
+    logger.info(f"Recall: {np.mean(full_link_prediction_results['recall']):.4f} ± {np.std(full_link_prediction_results['recall']):.4f}")
+    logger.info(f"F1-Score: {np.mean(full_link_prediction_results['f1_score']):.4f} ± {np.std(full_link_prediction_results['f1_score']):.4f}")
+    logger.info(f"Total Time: {full_duration:.2f}s")
 
     # Comparison
-    print(f"\n" + "=" * 50)
-    print("COMPARISON")
-    print("=" * 50)
+    logger.info(f"\n" + "=" * 50)
+    logger.info("COMPARISON")
+    logger.info("=" * 50)
     auc_diff = np.mean(streaming_link_prediction_results['auc']) - np.mean(full_link_prediction_results['auc'])
     time_ratio = streaming_duration / full_duration
-    print(f"AUC Difference (Streaming - Full): {auc_diff:+.4f}")
-    print(f"Runtime Ratio (Streaming / Full): {time_ratio:.2f}x")
+    logger.info(f"AUC Difference (Streaming - Full): {auc_diff:+.4f}")
+    logger.info(f"Runtime Ratio (Streaming / Full): {time_ratio:.2f}x")
 
     # Save results if output directory specified
     if output_dir:
