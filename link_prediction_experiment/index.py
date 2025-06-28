@@ -349,62 +349,52 @@ def split_dataset(data_file_path, data_format, train_percentage):
 
 
 def sample_negative_edges(sources, targets, all_nodes, num_negative_samples, seed=42):
-    """Sample negative edges efficiently for large datasets - returns NumPy arrays."""
+    """Fast negative edge sampling using NumPy operations."""
     np.random.seed(seed)
 
-    existing_edges = set(zip(sources, targets))
-
-    # Scale batch size based on density
-    batch_size = 5000000
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
+    logger.info(f"Training set has {len(sources):,} edges to avoid")
 
+    # Convert existing edges to set WITHOUT sorting (for directed graphs)
+    existing_pairs = list(zip(sources, targets))
+    existing_set = set(existing_pairs)
+
+    logger.info("Created optimized edge lookup structure")
+
+    # Generate negative edges in very large batches
+    batch_size = 10000000  # 10M at a time
     negative_edges = []
     attempts = 0
 
     while len(negative_edges) < num_negative_samples:
+        attempts += 1
         remaining = num_negative_samples - len(negative_edges)
-        current_batch_size = min(batch_size, remaining * 10)  # Generate 10x what we need
+        current_batch = min(batch_size, remaining * 5)
 
-        # Generate large batch
-        u = np.random.choice(all_nodes, current_batch_size, replace=True)
-        v = np.random.choice(all_nodes, current_batch_size, replace=True)
+        # Generate candidate edges
+        u = np.random.choice(all_nodes, current_batch, replace=True)
+        v = np.random.choice(all_nodes, current_batch, replace=True)
 
-        # Vectorized filtering
+        # Remove self-loops
         valid_mask = u != v
         u_valid, v_valid = u[valid_mask], v[valid_mask]
 
-        # Process in chunks to avoid memory issues with very large batches
-        chunk_size = 100000
-        for i in range(0, len(u_valid), chunk_size):
-            if len(negative_edges) >= num_negative_samples:
-                break
+        # Create candidate pairs WITHOUT sorting (preserve direction)
+        candidate_tuples = set(zip(u_valid, v_valid))
 
-            u_chunk = u_valid[i:i + chunk_size]
-            v_chunk = v_valid[i:i + chunk_size]
+        # Find new negative edges
+        new_negatives = candidate_tuples - existing_set
+        negative_edges.extend(list(new_negatives))
 
-            # Check chunk against existing edges
-            chunk_edges = set(zip(u_chunk, v_chunk)) - existing_edges
-            negative_edges = negative_edges + list(chunk_edges)
+        progress = len(negative_edges) / num_negative_samples * 100
+        logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
 
-        attempts += 1
+    # Take exactly what we need and convert back to arrays
+    final_edges = list(negative_edges)[:num_negative_samples]
+    neg_array = np.array(final_edges)
 
-        # Log every 100 attempts
-        if attempts % 100 == 0:
-            progress = len(negative_edges) / num_negative_samples * 100
-            logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
-
-    progress = len(negative_edges) / num_negative_samples * 100
-    logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
-
-    # Convert to NumPy arrays - more efficient approach
-    neg_list = list(negative_edges)[:num_negative_samples]
-    neg_array = np.array(neg_list)  # Convert to 2D array
-
-    negative_sources = neg_array[:, 0]  # First column
-    negative_targets = neg_array[:, 1]  # Second column
-
-    logger.info(f"Successfully sampled {len(negative_sources):,} negative edges in {attempts} attempts")
-    return negative_sources, negative_targets
+    logger.info(f"Successfully sampled {len(final_edges):,} negative edges in {attempts} attempts")
+    return neg_array[:, 0], neg_array[:, 1]
 
 
 def evaluate_link_prediction(
