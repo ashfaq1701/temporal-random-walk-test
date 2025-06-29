@@ -539,12 +539,13 @@ def run_single_experiment(embeddings, test_sources, test_targets,
     )
 
 
-def run_link_prediction_experiments(data_file_path, data_format, is_directed,
-                                    batch_ts_size, sliding_window_duration, weighted_sum_alpha,
-                                    walk_length, num_walks_per_node, embedding_dim, edge_op,
-                                    classifier_train_ratio, n_epochs,
-                                    full_embedding_use_gpu, incremental_embedding_use_gpu,
-                                    link_prediction_use_gpu, n_runs, word2vec_n_workers, output_path=None):
+def run_link_prediction_experiments(
+        data_file_path, data_format, is_directed,
+        walk_length, num_walks_per_node, embedding_dim,
+        edge_op, classifier_train_ratio, n_epochs,
+        full_embedding_use_gpu, link_prediction_use_gpu, n_runs,
+        word2vec_n_workers, output_path=None):
+
     logger.info("Starting link prediction experiments")
 
     train_df, val_df, test_df = split_dataset(data_file_path, data_format)
@@ -625,16 +626,10 @@ if __name__ == '__main__':
     # Required arguments
     parser.add_argument('--data_file_path', type=str, required=True,
                         help='Path to data file (parquet or csv format)')
-    parser.add_argument('--batch_ts_size', type=int, required=True,
-                        help='Time duration per batch for streaming approach')
-    parser.add_argument('--sliding_window_duration', type=int, required=True,
-                        help='Sliding window duration for temporal random walk')
     parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True,
                         help='Whether the graph is directed (true/false)')
 
     # Model parameters
-    parser.add_argument('--weighted_sum_alpha', type=float, default=0.5,
-                        help='Alpha parameter for weighted sum in streaming approach')
     parser.add_argument('--walk_length', type=int, default=80,
                         help='Maximum length of random walks')
     parser.add_argument('--num_walks_per_node', type=int, default=10,
@@ -656,8 +651,6 @@ if __name__ == '__main__':
     # GPU settings
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
                         help='Enable GPU acceleration for full embedding approach')
-    parser.add_argument('--incremental_embedding_use_gpu', action='store_true',
-                        help='Enable GPU acceleration for streaming embedding approach')
     parser.add_argument('--link_prediction_use_gpu', action='store_true',
                         help='Enable GPU acceleration for link prediction neural network')
 
@@ -677,9 +670,6 @@ if __name__ == '__main__':
         data_file_path=args.data_file_path,
         data_format=args.data_format,
         is_directed=args.is_directed,
-        batch_ts_size=args.batch_ts_size,
-        sliding_window_duration=args.sliding_window_duration,
-        weighted_sum_alpha=args.weighted_sum_alpha,
         walk_length=args.walk_length,
         num_walks_per_node=args.num_walks_per_node,
         embedding_dim=args.embedding_dim,
@@ -687,7 +677,6 @@ if __name__ == '__main__':
         classifier_train_ratio=args.classifier_train_ratio,
         n_epochs=args.n_epochs,
         full_embedding_use_gpu=args.full_embedding_use_gpu,
-        incremental_embedding_use_gpu=args.incremental_embedding_use_gpu,
         link_prediction_use_gpu=args.link_prediction_use_gpu,
         n_runs=args.n_runs,
         word2vec_n_workers=args.word2vec_n_workers,
