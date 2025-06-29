@@ -11,3 +11,4 @@ networkx
 tensorflow
 gensim
 torch
+py-tgb
