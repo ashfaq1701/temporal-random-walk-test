@@ -394,10 +394,11 @@ def compute_mrr(positive_scores, negative_scores):
 
 
 def evaluate_link_prediction(test_sources, test_targets,
-                                       negative_sources, negative_targets,
-                                       node_embeddings, edge_op,
-                                       classifier_train_ratio, n_epochs, device):
-    logger.info("Starting link prediction evaluation")
+                             negative_sources, negative_targets,
+                             node_embeddings, edge_op,
+                             classifier_train_ratio, n_epochs, device):
+    """Evaluate link prediction following TGB methodology with separate validation and test MRR."""
+    logger.info("Starting TGB-style link prediction evaluation")
 
     # Create edge features for positive and negative edges
     pos_features = create_edge_features(test_sources, test_targets, node_embeddings, edge_op)
@@ -440,29 +441,41 @@ def evaluate_link_prediction(test_sources, test_targets,
         epochs=n_epochs, device=device, patience=10
     )
 
-    # Make predictions
+    # Make predictions on classifier test set
     logger.info("Making final predictions...")
     y_pred_proba = predict_with_model(model, X_classifier_test, device=device)
     y_pred = (y_pred_proba > 0.5).astype(int)
 
-    # Calculate standard metrics
+    # Calculate standard metrics on classifier test set
     auc = roc_auc_score(y_classifier_test, y_pred_proba)
     accuracy = accuracy_score(y_classifier_test, y_pred)
     precision = precision_score(y_classifier_test, y_pred, zero_division=0)
     recall = recall_score(y_classifier_test, y_pred, zero_division=0)
     f1 = f1_score(y_classifier_test, y_pred, zero_division=0)
 
-    logger.info("Computing MRR...")
+    # Compute MRR separately for validation and test sets
+    logger.info("Computing MRR for validation and test sets...")
 
-    # Get scores for all positive and negative edges (not just test split)
-    all_pos_features = create_edge_features(test_sources, test_targets, node_embeddings, edge_op)
-    all_neg_features = create_edge_features(negative_sources, negative_targets, node_embeddings, edge_op)
+    # Validation MRR: Use X_val, y_val
+    val_pred_proba = predict_with_model(model, X_val, device=device)
+    val_pos_scores = val_pred_proba[y_val == 1]  # Positive edge scores
+    val_neg_scores = val_pred_proba[y_val == 0]  # Negative edge scores
 
-    positive_scores = predict_with_model(model, all_pos_features, device=device)
-    negative_scores = predict_with_model(model, all_neg_features, device=device)
+    if len(val_pos_scores) > 0 and len(val_neg_scores) > 0:
+        mrr_val = compute_mrr(val_pos_scores, val_neg_scores)
+    else:
+        mrr_val = 0.0
+        logger.warning("No validation samples for MRR computation")
 
-    # Compute MRR
-    mrr = compute_mrr(positive_scores, negative_scores)
+    # Test MRR: Use X_classifier_test, y_classifier_test
+    test_pos_scores = y_pred_proba[y_classifier_test == 1]  # Positive edge scores
+    test_neg_scores = y_pred_proba[y_classifier_test == 0]  # Negative edge scores
+
+    if len(test_pos_scores) > 0 and len(test_neg_scores) > 0:
+        mrr_test = compute_mrr(test_pos_scores, test_neg_scores)
+    else:
+        mrr_test = 0.0
+        logger.warning("No test samples for MRR computation")
 
     results = {
         'auc': auc,
@@ -470,11 +483,13 @@ def evaluate_link_prediction(test_sources, test_targets,
         'precision': precision,
         'recall': recall,
         'f1_score': f1,
-        'mrr': mrr,
+        'mrr_val': mrr_val,
+        'mrr_test': mrr_test,
         'training_history': history
     }
 
-    logger.info(f"Link prediction completed - AUC: {auc:.4f}, MRR: {mrr:.4f}")
+    logger.info(f"Link prediction completed - AUC: {auc:.4f}")
+    logger.info(f"MRR validation: {mrr_val:.4f}, MRR test: {mrr_test:.4f}")
     return results
 
 
@@ -585,7 +600,7 @@ def run_link_prediction_experiments(
 
     full_results = {
         'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [],
-        'mrr': [], 'training_history': []
+        'mrr_val': [], 'mrr_test': [], 'training_history': []
     }
 
 
@@ -603,7 +618,8 @@ def run_link_prediction_experiments(
 
     logger.info(f"\nFull Approach Results:")
     logger.info(f"AUC: {np.mean(full_results['auc']):.4f} ± {np.std(full_results['auc']):.4f}")
-    logger.info(f"MRR: {np.mean(full_results['mrr']):.4f} ± {np.std(full_results['mrr']):.4f}")
+    logger.info(f"MRR (val): {np.mean(full_results['mrr_val']):.4f} ± {np.std(full_results['mrr_val']):.4f}")
+    logger.info(f"MRR (test): {np.mean(full_results['mrr_test']):.4f} ± {np.std(full_results['mrr_test']):.4f}")
     logger.info(f"Accuracy: {np.mean(full_results['accuracy']):.4f} ± {np.std(full_results['accuracy']):.4f}")
     logger.info(f"Precision: {np.mean(full_results['precision']):.4f} ± {np.std(full_results['precision']):.4f}")
     logger.info(f"Recall: {np.mean(full_results['recall']):.4f} ± {np.std(full_results['recall']):.4f}")
