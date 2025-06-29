@@ -51,7 +51,7 @@ def suppress_word2vec_output():
 
 
 def split_dataset(data_file_path, data_format):
-    """Split dataset following TGB's 70/15/15 methodology exactly."""
+    """Split dataset following TGB's 70/15/15 methodology."""
     logger.info(f"Loading dataset from {data_file_path}")
 
     if data_format == 'parquet':
@@ -63,7 +63,6 @@ def split_dataset(data_file_path, data_format):
     unique_timestamps = timestamps.unique()
     logger.info(f"Dataset contains {len(df)} edges with {len(unique_timestamps)} unique timestamps")
 
-    # TGB's exact 70/15/15 split by timestamps
     train_split_idx = int(len(unique_timestamps) * 0.70)
     val_split_idx = int(len(unique_timestamps) * 0.85)  # 70% + 15%
 
@@ -90,7 +89,6 @@ def split_dataset(data_file_path, data_format):
 
 
 def sample_negative_edges(train_sources, train_targets, all_nodes, num_negative_samples, seed=42):
-    """Sample negative edges following TGB methodology - avoid only training edges."""
     np.random.seed(seed)
 
     logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
@@ -398,8 +396,7 @@ def evaluate_link_prediction(test_sources, test_targets,
                                        negative_sources, negative_targets,
                                        node_embeddings, edge_op,
                                        classifier_train_ratio, n_epochs, device):
-    """Evaluate link prediction following TGB methodology with MRR."""
-    logger.info("Starting TGB-style link prediction evaluation")
+    logger.info("Starting link prediction evaluation")
 
     # Create edge features for positive and negative edges
     pos_features = create_edge_features(test_sources, test_targets, node_embeddings, edge_op)
@@ -454,7 +451,6 @@ def evaluate_link_prediction(test_sources, test_targets,
     recall = recall_score(y_classifier_test, y_pred, zero_division=0)
     f1 = f1_score(y_classifier_test, y_pred, zero_division=0)
 
-    # Calculate MRR (TGB's primary ranking metric)
     logger.info("Computing MRR...")
 
     # Get scores for all positive and negative edges (not just test split)
@@ -642,14 +638,12 @@ def run_link_prediction_experiments(data_file_path, data_format, is_directed,
                                     walk_length, num_walks_per_node, embedding_dim, edge_op,
                                     classifier_train_ratio, n_epochs,
                                     full_embedding_use_gpu, incremental_embedding_use_gpu,
-                                    link_prediction_use_gpu, n_runs, word2vec_n_workers, output_dir=None):
-    """Run TGB-aligned link prediction experiments."""
-    logger.info("Starting TGB-aligned link prediction experiments")
+                                    link_prediction_use_gpu, n_runs, word2vec_n_workers, output_path=None):
+    logger.info("Starting link prediction experiments")
 
-    # TGB-style dataset split
     train_df, val_df, test_df = split_dataset(data_file_path, data_format)
 
-    # Convert to arrays (only use train and test for now, following TGB)
+    # Convert to arrays
     train_sources = train_df['u'].to_numpy()
     train_targets = train_df['i'].to_numpy()
     train_timestamps = train_df['ts'].to_numpy()
@@ -664,7 +658,7 @@ def run_link_prediction_experiments(data_file_path, data_format, is_directed,
     logger.info(f"Train nodes: {len(train_nodes):,}, Test nodes: {len(test_nodes):,}")
     logger.info(f"Total nodes: {len(all_nodes):,}")
 
-    # Sample negative edges (TGB style - avoid only training edges)
+    # Sample negative edges
     negative_sources, negative_targets = sample_negative_edges(
         train_sources, train_targets, all_nodes, len(test_sources)
     )
@@ -755,7 +749,7 @@ def run_link_prediction_experiments(data_file_path, data_format, is_directed,
     logger.info(f"MRR Difference (Streaming - Full): {mrr_diff:+.4f}")
 
     # Save results
-    if output_dir:
+    if output_path:
         results = {
             'full_approach': full_results,
             'streaming_approach': streaming_results,
@@ -765,8 +759,7 @@ def run_link_prediction_experiments(data_file_path, data_format, is_directed,
             }
         }
 
-        output_path = Path(output_dir) / "tgb_aligned_results.json"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2, default=lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
@@ -776,7 +769,7 @@ def run_link_prediction_experiments(data_file_path, data_format, is_directed,
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="TGB-Aligned Temporal Link Prediction")
+    parser = argparse.ArgumentParser(description="Temporal Link Prediction")
 
     # Required arguments
     parser.add_argument('--data_file_path', type=str, required=True,
@@ -804,7 +797,7 @@ if __name__ == '__main__':
     # Training parameters
     parser.add_argument('--classifier_train_ratio', type=float, default=0.75,
                         help='Ratio of data used for training link prediction classifier')
-    parser.add_argument('--n_epochs', type=int, default=20,
+    parser.add_argument('--n_epochs', type=int, default=10,
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
                         help='Number of experimental runs for averaging results')
@@ -821,10 +814,10 @@ if __name__ == '__main__':
     parser.add_argument('--data_format', type=str, default='parquet',
                         choices=['parquet', 'csv'],
                         help='Data file format')
-    parser.add_argument('--word2vec_n_workers', type=int, default=4,
+    parser.add_argument('--word2vec_n_workers', type=int, default=8,
                         help='Number of workers for Word2Vec training')
-    parser.add_argument('--output_dir', type=str, default=None,
-                        help='Directory to save results (optional)')
+    parser.add_argument('--output_path', type=str, default=None,
+                        help='File path to save results (optional)')
 
     args = parser.parse_args()
 
@@ -847,5 +840,5 @@ if __name__ == '__main__':
         link_prediction_use_gpu=args.link_prediction_use_gpu,
         n_runs=args.n_runs,
         word2vec_n_workers=args.word2vec_n_workers,
-        output_dir=args.output_dir
+        output_path=args.output_path
     )
