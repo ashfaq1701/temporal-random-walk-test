@@ -782,15 +782,22 @@ def run_link_prediction_experiments(
 
     # Comparison
     auc_diff = np.mean(streaming_results['auc']) - np.mean(full_results['auc'])
+    mrr_diff_val = np.mean(streaming_results['val_mrr'] - np.mean(full_results['val_mrr']))
+    mrr_diff_test = np.mean(streaming_results['test_mrr'] - np.mean(full_results['test_mrr']))
+
     logger.info(f"\nComparison:")
     logger.info(f"AUC Difference (Streaming - Full): {auc_diff:+.4f}")
+    logger.info(f'MRR Difference (Validation): {mrr_diff_val:+.4f}')
+    logger.info(f'MRR Difference (Test): {mrr_diff_test:+.4f}')
 
     if output_path:
         results = {
             'full_approach': full_results,
             'streaming_approach': streaming_results,
             'comparison': {
-                'auc_difference': auc_diff
+                'auc_difference': auc_diff,
+                'mrr_val_difference': mrr_diff_val,
+                'mrr_test_difference': mrr_diff_test
             }
         }
 

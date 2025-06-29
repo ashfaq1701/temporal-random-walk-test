@@ -1,22 +1,25 @@
 import argparse
 import json
-import logging
-import warnings
-from contextlib import contextmanager
+import random
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import logging
+import warnings
+from contextlib import contextmanager
+
+from temporal_random_walk import TemporalRandomWalk
+from gensim.models import Word2Vec
+from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from gensim.models import Word2Vec
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
-from temporal_random_walk import TemporalRandomWalk
 from torch.amp import GradScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-# Set up logging
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -50,89 +53,134 @@ def suppress_word2vec_output():
         kv_logger.setLevel(original_kv_level)
 
 
-def split_dataset(data_file_path, data_format):
-    """Split dataset following TGB's 70/15/15 methodology - chronological by edges."""
+def split_dataset(data_file_path):
+    """
+    Split dataset by sorted unique timestamps (TGB-style):
+    - 70% training (timestamps ≤ t70)
+    - 15% validation (t70 < timestamps ≤ t85)
+    - 15% test (timestamps > t85)
+    """
     logger.info(f"Loading dataset from {data_file_path}")
 
-    if data_format == 'parquet':
+    if data_file_path.endswith('.parquet'):
         df = pd.read_parquet(data_file_path)
     else:
         df = pd.read_csv(data_file_path)
 
-    # Sort by timestamp to ensure chronological order (TGB requirement)
+    # Sort by timestamp to ensure chronological order
     df = df.sort_values('ts').reset_index(drop=True)
 
-    timestamps = df['ts']
-    unique_timestamps = timestamps.unique()
-    logger.info(f"Dataset contains {len(df)} edges with {len(unique_timestamps)} unique timestamps")
+    timestamps = df['ts'].values
+    unique_ts = np.sort(np.unique(timestamps))
+    logger.info(f"Dataset contains {len(df):,} edges with {len(unique_ts):,} unique timestamps")
 
-    # TGB's approach: Split chronologically by edges (70/15/15)
+    # TGB-style splitting by unique timestamps
+    t70 = unique_ts[int(len(unique_ts) * 0.70)]
+    t85 = unique_ts[int(len(unique_ts) * 0.85)]
+
+    logger.info(f"Timestamp thresholds: t70={t70}, t85={t85}")
+
+    # Create datasets
+    train_df = df[df['ts'] <= t70]
+    valid_df = df[(df['ts'] > t70) & (df['ts'] <= t85)]
+    test_df  = df[df['ts'] > t85]
+
     n_total = len(df)
-    train_end_idx = int(n_total * 0.70)
-    val_end_idx = int(n_total * 0.85)
+    logger.info(f"Train: {len(train_df):,} edges ({len(train_df) / n_total * 100:.1f}%)")
+    logger.info(f"Valid: {len(valid_df):,} edges ({len(valid_df) / n_total * 100:.1f}%)")
+    logger.info(f"Test:  {len(test_df):,} edges ({len(test_df) / n_total * 100:.1f}%)")
 
-    # Create datasets by edge indices (chronologically ordered)
-    train_df = df.iloc[:train_end_idx]
-    val_df = df.iloc[train_end_idx:val_end_idx]
-    test_df = df.iloc[val_end_idx:]
-
-    logger.info(f"Train set: {len(train_df)} edges ({len(train_df) / n_total * 100:.1f}%)")
-    logger.info(f"Val set: {len(val_df)} edges ({len(val_df) / n_total * 100:.1f}%)")
-    logger.info(f"Test set: {len(test_df)} edges ({len(test_df) / n_total * 100:.1f}%)")
-
-    # Log timestamp ranges to verify chronological split
-    logger.info(f"Timestamp ranges:")
+    # Log timestamp ranges
+    logger.info(f"Actual timestamp ranges:")
     logger.info(f"  Train: {train_df['ts'].min()} to {train_df['ts'].max()}")
-    logger.info(f"  Val: {val_df['ts'].min()} to {val_df['ts'].max()}")
-    logger.info(f"  Test: {test_df['ts'].min()} to {test_df['ts'].max()}")
+    logger.info(f"  Valid: {valid_df['ts'].min()} to {valid_df['ts'].max()}")
+    logger.info(f"  Test:  {test_df['ts'].min()} to {test_df['ts'].max()}")
 
-    return train_df, val_df, test_df
+    return train_df, valid_df, test_df
 
 
-def sample_negative_edges(train_sources, train_targets, all_nodes, num_negative_samples, seed=42):
-    np.random.seed(seed)
+def create_dataset_with_negative_edges(ds_sources, ds_targets,
+                                       sources_to_exclude, targets_to_exclude,
+                                       is_directed, neg_ratio=1.0, random_state=42):
+    """
+    Create a dataset combining positive and negative edges.
 
-    logger.info(f"Sampling {num_negative_samples:,} negative edges from {len(all_nodes):,} nodes")
-    logger.info(f"Avoiding {len(train_sources):,} training edges")
+    Args:
+        ds_sources (array-like): Source nodes for positive edges
+        ds_targets (array-like): Target nodes for positive edges
+        sources_to_exclude (array-like): Source nodes to exclude for negatives
+        targets_to_exclude (array-like): Target nodes to exclude for negatives
+        is_directed (bool): Whether the graph is directed
+        neg_ratio (float): Number of negative samples per positive edge
+        random_state (int): Random seed for reproducibility
 
-    # Convert training edges to set (avoid only these)
-    existing_pairs = set(zip(train_sources, train_targets))
-    logger.info("Created training edge lookup structure")
+    Returns:
+        tuple: (all_sources, all_targets, labels) where labels = 1 for positive, 0 for negative
+    """
+    np.random.seed(random_state)
+    random.seed(random_state)
 
-    # Generate negative edges in batches
+    num_positive = len(ds_sources)
+    num_negative = int(num_positive * neg_ratio)
+    logger.info(f"Creating dataset with {num_positive:,} positive edges and {num_negative:,} negatives")
+
+    # Get all unique nodes
+    all_nodes = list(set(ds_sources).union(ds_targets, sources_to_exclude, targets_to_exclude))
+
+    # Create set of edges to exclude
+    edges_to_exclude = set(zip(sources_to_exclude, targets_to_exclude))
+    if not is_directed:
+        edges_to_exclude |= set(zip(targets_to_exclude, sources_to_exclude))  # Add reverse direction
+
+    logger.info(f"Sampling negatives from {len(all_nodes):,} nodes")
+    logger.info(f"Total excluded edge pairs: {len(edges_to_exclude):,}")
+
+    # Generate negative edges
     batch_size = 10_000_000
     negative_edges = []
     attempts = 0
 
-    while len(negative_edges) < num_negative_samples:
+    while len(negative_edges) < num_negative:
         attempts += 1
-        remaining = num_negative_samples - len(negative_edges)
+        remaining = num_negative - len(negative_edges)
         current_batch = min(batch_size, remaining * 5)
 
-        # Generate candidate edges from all nodes
         u = np.random.choice(all_nodes, current_batch, replace=True)
         v = np.random.choice(all_nodes, current_batch, replace=True)
 
-        # Remove self-loops
-        valid_mask = u != v
-        u_valid, v_valid = u[valid_mask], v[valid_mask]
+        mask = u != v
+        u_valid, v_valid = u[mask], v[mask]
+        candidate_pairs = set(zip(u_valid, v_valid))
 
-        # Create candidate pairs
-        candidate_tuples = set(zip(u_valid, v_valid))
-
-        # Find negatives that don't exist in training set
-        new_negatives = candidate_tuples - existing_pairs
+        new_negatives = candidate_pairs - edges_to_exclude
         negative_edges.extend(list(new_negatives))
 
-        progress = len(negative_edges) / num_negative_samples * 100
-        logger.info(f"Attempt {attempts}: Found {len(negative_edges):,}/{num_negative_samples:,} ({progress:.1f}%)")
+        logger.info(f"Attempt {attempts}: Collected {len(negative_edges):,}/{num_negative:,} negatives")
 
-    # Take exactly what we need
-    final_edges = list(negative_edges)[:num_negative_samples]
-    neg_array = np.array(final_edges)
+    if len(negative_edges) < num_negative:
+        logger.warning("Not enough valid negatives found. Returning fewer samples.")
 
-    logger.info(f"Successfully sampled {len(final_edges):,} negative edges in {attempts} attempts")
-    return neg_array[:, 0], neg_array[:, 1]
+    # Final trim
+    negative_edges = list(negative_edges)[:num_negative]
+    neg_sources, neg_targets = zip(*negative_edges)
+
+    # Create labels
+    pos_labels = np.ones(num_positive, dtype=np.int32)
+    neg_labels = np.zeros(num_negative, dtype=np.int32)
+
+    all_sources = np.concatenate([ds_sources, neg_sources])
+    all_targets = np.concatenate([ds_targets, neg_targets])
+    all_labels  = np.concatenate([pos_labels, neg_labels])
+
+    # Shuffle dataset
+    indices = np.random.permutation(len(all_sources))
+    all_sources = all_sources[indices]
+    all_targets = all_targets[indices]
+    all_labels  = all_labels[indices]
+
+    logger.info(f"Final dataset: {len(all_sources):,} edges (positive + negative)")
+
+    return all_sources, all_targets, all_labels
 
 
 class EarlyStopping:
@@ -185,7 +233,7 @@ def create_link_prediction_model(input_dim, device='cpu'):
 
 def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                                 batch_size=1_000_000, learning_rate=0.001,
-                                epochs=20, device='cpu', patience=10, use_amp=True):
+                                epochs=20, device='cpu', patience=3, use_amp=True):
     """Train link prediction neural network model."""
     logger.info(f"Training neural network on {len(X_train):,} samples with batch size {batch_size:,}")
 
@@ -393,106 +441,6 @@ def compute_mrr(positive_scores, negative_scores):
     return np.mean(reciprocal_ranks)
 
 
-def evaluate_link_prediction(test_sources, test_targets,
-                             negative_sources, negative_targets,
-                             node_embeddings, edge_op,
-                             classifier_train_ratio, n_epochs, device):
-    """Evaluate link prediction following TGB methodology with separate validation and test MRR."""
-    logger.info("Starting TGB-style link prediction evaluation")
-
-    # Create edge features for positive and negative edges
-    pos_features = create_edge_features(test_sources, test_targets, node_embeddings, edge_op)
-    neg_features = create_edge_features(negative_sources, negative_targets, node_embeddings, edge_op)
-
-    # Combine features and labels
-    all_features = np.concatenate([pos_features, neg_features])
-    all_labels = np.concatenate([np.ones(len(pos_features)), np.zeros(len(neg_features))])
-
-    # Shuffle the data
-    indices = np.random.permutation(len(all_features))
-    all_features = all_features[indices]
-    all_labels = all_labels[indices]
-
-    logger.info(f"Total samples for classification: {len(all_features):,}")
-
-    # Split for classifier training (this is separate from temporal split)
-    train_size = int(len(all_features) * classifier_train_ratio)
-
-    X_classifier_train = all_features[:train_size]
-    y_classifier_train = all_labels[:train_size]
-    X_classifier_test = all_features[train_size:]
-    y_classifier_test = all_labels[train_size:]
-
-    # Further split training data for validation
-    val_size = int(len(X_classifier_train) * 0.15)
-    X_train = X_classifier_train[val_size:]
-    y_train = y_classifier_train[val_size:]
-    X_val = X_classifier_train[:val_size]
-    y_val = y_classifier_train[:val_size]
-
-    logger.info(f"Classifier train: {len(X_train):,}, val: {len(X_val):,}, test: {len(X_classifier_test):,}")
-
-    # Create and train model
-    input_dim = all_features.shape[1]
-    model = create_link_prediction_model(input_dim, device)
-
-    history = train_link_prediction_model(
-        model, X_train, y_train, X_val, y_val,
-        epochs=n_epochs, device=device, patience=10
-    )
-
-    # Make predictions on classifier test set
-    logger.info("Making final predictions...")
-    y_pred_proba = predict_with_model(model, X_classifier_test, device=device)
-    y_pred = (y_pred_proba > 0.5).astype(int)
-
-    # Calculate standard metrics on classifier test set
-    auc = roc_auc_score(y_classifier_test, y_pred_proba)
-    accuracy = accuracy_score(y_classifier_test, y_pred)
-    precision = precision_score(y_classifier_test, y_pred, zero_division=0)
-    recall = recall_score(y_classifier_test, y_pred, zero_division=0)
-    f1 = f1_score(y_classifier_test, y_pred, zero_division=0)
-
-    # Compute MRR separately for validation and test sets
-    logger.info("Computing MRR for validation and test sets...")
-
-    # Validation MRR: Use X_val, y_val
-    val_pred_proba = predict_with_model(model, X_val, device=device)
-    val_pos_scores = val_pred_proba[y_val == 1]  # Positive edge scores
-    val_neg_scores = val_pred_proba[y_val == 0]  # Negative edge scores
-
-    if len(val_pos_scores) > 0 and len(val_neg_scores) > 0:
-        mrr_val = compute_mrr(val_pos_scores, val_neg_scores)
-    else:
-        mrr_val = 0.0
-        logger.warning("No validation samples for MRR computation")
-
-    # Test MRR: Use X_classifier_test, y_classifier_test
-    test_pos_scores = y_pred_proba[y_classifier_test == 1]  # Positive edge scores
-    test_neg_scores = y_pred_proba[y_classifier_test == 0]  # Negative edge scores
-
-    if len(test_pos_scores) > 0 and len(test_neg_scores) > 0:
-        mrr_test = compute_mrr(test_pos_scores, test_neg_scores)
-    else:
-        mrr_test = 0.0
-        logger.warning("No test samples for MRR computation")
-
-    results = {
-        'auc': auc,
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'mrr_val': mrr_val,
-        'mrr_test': mrr_test,
-        'training_history': history
-    }
-
-    logger.info(f"Link prediction completed - AUC: {auc:.4f}")
-    logger.info(f"MRR validation: {mrr_val:.4f}, MRR test: {mrr_test:.4f}")
-    return results
-
-
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
                                    is_directed, walk_length, num_walks_per_node,
                                    embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
@@ -542,51 +490,121 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
     return node_embeddings
 
 
-def run_single_experiment(embeddings, test_sources, test_targets,
-                          negative_sources, negative_targets,
-                          edge_op, classifier_train_ratio, n_epochs, device):
-    """Run a single link prediction experiment."""
-    return evaluate_link_prediction(
+
+def evaluate_link_prediction(
+        train_sources, train_targets,
+        valid_sources, valid_targets,
         test_sources, test_targets,
-        negative_sources, negative_targets,
-        embeddings, edge_op,
-        classifier_train_ratio, n_epochs, device
+        node_embeddings, edge_op, is_directed,
+        n_epochs, device):
+    train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
+        train_sources,
+        train_targets,
+        train_sources,
+        train_targets,
+        is_directed
     )
+
+    valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
+        valid_sources,
+        valid_targets,
+        train_sources,
+        train_targets,
+        is_directed
+    )
+
+    test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
+        test_sources,
+        test_targets,
+        train_sources,
+        train_targets,
+        is_directed
+    )
+
+    train_features = create_edge_features(train_sources_combined, train_targets_combined, node_embeddings, edge_op)
+    valid_features = create_edge_features(valid_sources_combined, valid_targets_combined, node_embeddings, edge_op)
+    test_features = create_edge_features(test_sources_combined, test_targets_combined, node_embeddings, edge_op)
+
+    logger.info(
+        f"Classifier train: {len(train_sources_combined):,}, val: {len(valid_sources_combined):,}, test: {len(test_sources_combined):,}")
+
+    input_dim = train_features.shape[1]
+    model = create_link_prediction_model(input_dim, device)
+
+    history = train_link_prediction_model(
+        model, train_features, train_labels_combined,
+        valid_features, valid_labels_combined,
+        epochs=n_epochs, device=device, patience=3
+    )
+
+    # Make predictions
+    logger.info("Making final predictions...")
+    val_pred_proba = predict_with_model(model, valid_features, device=device)
+    test_pred_proba = predict_with_model(model, test_features, device=device)
+
+    test_pred = (test_pred_proba > 0.5).astype(int)
+
+    # Calculate standard metrics for test set
+    test_auc = roc_auc_score(test_labels_combined, test_pred_proba)
+    test_accuracy = accuracy_score(test_labels_combined, test_pred)
+    test_precision = precision_score(test_labels_combined, test_pred, zero_division=0)
+    test_recall = recall_score(test_labels_combined, test_pred, zero_division=0)
+    test_f1 = f1_score(test_labels_combined, test_pred, zero_division=0)
+
+    # Calculate MRR for validation and test sets
+    # Split predictions by positive/negative labels
+    val_pos_scores = val_pred_proba[valid_labels_combined == 1]
+    val_neg_scores = val_pred_proba[valid_labels_combined == 0]
+    val_mrr = compute_mrr(val_pos_scores, val_neg_scores)
+
+    test_pos_scores = test_pred_proba[test_labels_combined == 1]
+    test_neg_scores = test_pred_proba[test_labels_combined == 0]
+    test_mrr = compute_mrr(test_pos_scores, test_neg_scores)
+
+    results = {
+        'auc': test_auc,
+        'accuracy': test_accuracy,
+        'precision': test_precision,
+        'recall': test_recall,
+        'f1_score': test_f1,
+        'val_mrr': val_mrr,
+        'test_mrr': test_mrr,
+        'training_history': history
+    }
+
+    logger.info(f"Link prediction completed - AUC: {test_auc:.4f}, Val MRR: {val_mrr:.4f}, Test MRR: {test_mrr:.4f}")
+    return results
 
 
 def run_link_prediction_experiments(
-        data_file_path, data_format, is_directed,
-        walk_length, num_walks_per_node, embedding_dim,
-        edge_op, classifier_train_ratio, n_epochs,
-        full_embedding_use_gpu, link_prediction_use_gpu, n_runs,
-        word2vec_n_workers, output_path=None):
-
+        data_file_path,
+        is_directed,
+        walk_length,
+        num_walks_per_node,
+        embedding_dim,
+        edge_op,
+        n_epochs,
+        full_embedding_use_gpu,
+        link_prediction_use_gpu,
+        n_runs,
+        word2vec_n_workers,
+        output_path
+):
     logger.info("Starting link prediction experiments")
 
-    train_df, val_df, test_df = split_dataset(data_file_path, data_format)
+    train_df, valid_df, test_df = split_dataset(data_file_path)
 
-    # Convert to arrays
     train_sources = train_df['u'].to_numpy()
     train_targets = train_df['i'].to_numpy()
     train_timestamps = train_df['ts'].to_numpy()
+
+    val_sources = valid_df['u'].to_numpy()
+    val_targets = valid_df['i'].to_numpy()
+
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
 
-    # Get all nodes for negative sampling
-    train_nodes = set(train_sources).union(set(train_targets))
-    test_nodes = set(test_sources).union(set(test_targets))
-    all_nodes = np.array(list(train_nodes.union(test_nodes)))
-
-    logger.info(f"Train nodes: {len(train_nodes):,}, Test nodes: {len(test_nodes):,}")
-    logger.info(f"Total nodes: {len(all_nodes):,}")
-
-    # Sample negative edges
-    negative_sources, negative_targets = sample_negative_edges(
-        train_sources, train_targets, all_nodes, len(test_sources)
-    )
-
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
-    logger.info(f"Using device: {device}")
 
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
@@ -599,33 +617,32 @@ def run_link_prediction_experiments(
     )
 
     full_results = {
-        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [],
-        'mrr_val': [], 'mrr_test': [], 'training_history': []
+        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'training_history': []
     }
-
 
     for run in range(n_runs):
         logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
-        full_result = run_single_experiment(
-            full_embeddings, test_sources, test_targets,
-            negative_sources, negative_targets,
-            edge_op, classifier_train_ratio, n_epochs, device
+        current_full_results = evaluate_link_prediction(
+            train_sources, train_targets,
+            val_sources, val_targets,
+            test_sources, test_targets,
+            full_embeddings, edge_op,
+            is_directed, n_epochs, device
         )
 
-        for key in full_results.keys():
-            full_results[key].append(full_result[key])
+        for key in current_full_results.keys():
+            full_results[key].append(current_full_results[key])
 
     logger.info(f"\nFull Approach Results:")
     logger.info(f"AUC: {np.mean(full_results['auc']):.4f} ± {np.std(full_results['auc']):.4f}")
-    logger.info(f"MRR (val): {np.mean(full_results['mrr_val']):.4f} ± {np.std(full_results['mrr_val']):.4f}")
-    logger.info(f"MRR (test): {np.mean(full_results['mrr_test']):.4f} ± {np.std(full_results['mrr_test']):.4f}")
     logger.info(f"Accuracy: {np.mean(full_results['accuracy']):.4f} ± {np.std(full_results['accuracy']):.4f}")
     logger.info(f"Precision: {np.mean(full_results['precision']):.4f} ± {np.std(full_results['precision']):.4f}")
     logger.info(f"Recall: {np.mean(full_results['recall']):.4f} ± {np.std(full_results['recall']):.4f}")
     logger.info(f"F1-Score: {np.mean(full_results['f1_score']):.4f} ± {np.std(full_results['f1_score']):.4f}")
+    logger.info(f"MRR (Test): {np.mean(full_results['test_mrr']):.4f} ± {np.std(full_results['test_mrr']):.4f}")
+    logger.info(f"MRR (Validation): {np.mean(full_results['val_mrr']):.4f} ± {np.std(full_results['val_mrr']):.4f}")
 
-    # Save results
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -646,6 +663,8 @@ if __name__ == '__main__':
                         help='Whether the graph is directed (true/false)')
 
     # Model parameters
+    parser.add_argument('--weighted_sum_alpha', type=float, default=0.5,
+                        help='Alpha parameter for weighted sum in streaming approach')
     parser.add_argument('--walk_length', type=int, default=80,
                         help='Maximum length of random walks')
     parser.add_argument('--num_walks_per_node', type=int, default=10,
@@ -657,8 +676,6 @@ if __name__ == '__main__':
                         help='Edge operation for combining node embeddings')
 
     # Training parameters
-    parser.add_argument('--classifier_train_ratio', type=float, default=0.75,
-                        help='Ratio of data used for training link prediction classifier')
     parser.add_argument('--n_epochs', type=int, default=10,
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
@@ -671,9 +688,6 @@ if __name__ == '__main__':
                         help='Enable GPU acceleration for link prediction neural network')
 
     # Other settings
-    parser.add_argument('--data_format', type=str, default='parquet',
-                        choices=['parquet', 'csv'],
-                        help='Data file format')
     parser.add_argument('--word2vec_n_workers', type=int, default=8,
                         help='Number of workers for Word2Vec training')
     parser.add_argument('--output_path', type=str, default=None,
@@ -684,13 +698,11 @@ if __name__ == '__main__':
     # Run experiments
     full_results = run_link_prediction_experiments(
         data_file_path=args.data_file_path,
-        data_format=args.data_format,
         is_directed=args.is_directed,
         walk_length=args.walk_length,
         num_walks_per_node=args.num_walks_per_node,
         embedding_dim=args.embedding_dim,
         edge_op=args.edge_op,
-        classifier_train_ratio=args.classifier_train_ratio,
         n_epochs=args.n_epochs,
         full_embedding_use_gpu=args.full_embedding_use_gpu,
         link_prediction_use_gpu=args.link_prediction_use_gpu,
