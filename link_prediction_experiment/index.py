@@ -51,7 +51,7 @@ def suppress_word2vec_output():
 
 
 def split_dataset(data_file_path, data_format):
-    """Split dataset following TGB's 70/15/15 methodology."""
+    """Split dataset following TGB's 70/15/15 methodology - chronological by edges."""
     logger.info(f"Loading dataset from {data_file_path}")
 
     if data_format == 'parquet':
@@ -59,31 +59,32 @@ def split_dataset(data_file_path, data_format):
     else:
         df = pd.read_csv(data_file_path)
 
+    # Sort by timestamp to ensure chronological order (TGB requirement)
+    df = df.sort_values('ts').reset_index(drop=True)
+
     timestamps = df['ts']
     unique_timestamps = timestamps.unique()
     logger.info(f"Dataset contains {len(df)} edges with {len(unique_timestamps)} unique timestamps")
 
-    train_split_idx = int(len(unique_timestamps) * 0.70)
-    val_split_idx = int(len(unique_timestamps) * 0.85)  # 70% + 15%
+    # TGB's approach: Split chronologically by edges (70/15/15)
+    n_total = len(df)
+    train_end_idx = int(n_total * 0.70)
+    val_end_idx = int(n_total * 0.85)
 
-    # Get boundary timestamps
-    train_end_timestamp = unique_timestamps[train_split_idx - 1] if train_split_idx > 0 else unique_timestamps[0]
-    val_end_timestamp = unique_timestamps[val_split_idx - 1] if val_split_idx < len(unique_timestamps) else \
-    unique_timestamps[-1]
+    # Create datasets by edge indices (chronologically ordered)
+    train_df = df.iloc[:train_end_idx]
+    val_df = df.iloc[train_end_idx:val_end_idx]
+    test_df = df.iloc[val_end_idx:]
 
-    # Create masks for each split
-    train_mask = timestamps <= train_end_timestamp
-    val_mask = (timestamps > train_end_timestamp) & (timestamps <= val_end_timestamp)
-    test_mask = timestamps > val_end_timestamp
+    logger.info(f"Train set: {len(train_df)} edges ({len(train_df) / n_total * 100:.1f}%)")
+    logger.info(f"Val set: {len(val_df)} edges ({len(val_df) / n_total * 100:.1f}%)")
+    logger.info(f"Test set: {len(test_df)} edges ({len(test_df) / n_total * 100:.1f}%)")
 
-    # Create datasets
-    train_df = df[train_mask]
-    val_df = df[val_mask]
-    test_df = df[test_mask]
-
-    logger.info(f"Train set: {len(train_df)} edges ({len(train_df) / len(df) * 100:.1f}%)")
-    logger.info(f"Val set: {len(val_df)} edges ({len(val_df) / len(df) * 100:.1f}%)")
-    logger.info(f"Test set: {len(test_df)} edges ({len(test_df) / len(df) * 100:.1f}%)")
+    # Log timestamp ranges to verify chronological split
+    logger.info(f"Timestamp ranges:")
+    logger.info(f"  Train: {train_df['ts'].min()} to {train_df['ts'].max()}")
+    logger.info(f"  Val: {val_df['ts'].min()} to {val_df['ts'].max()}")
+    logger.info(f"  Test: {test_df['ts'].min()} to {test_df['ts'].max()}")
 
     return train_df, val_df, test_df
 
