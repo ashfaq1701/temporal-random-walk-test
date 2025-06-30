@@ -333,7 +333,7 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                     loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
-                all_val_preds.extend(torch.sigmoid(outputs).cpu().numpy().flatten())
+                all_val_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
                 del batch_X, batch_y, outputs, loss

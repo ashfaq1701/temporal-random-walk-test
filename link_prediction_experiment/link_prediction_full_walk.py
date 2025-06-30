@@ -303,7 +303,7 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                 optimizer.step()
 
             total_train_loss += loss.item()
-            all_train_preds.extend(torch.sigmoid(outputs).cpu().numpy().flatten())
+            all_train_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
             all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
             del batch_X, batch_y, outputs, loss
@@ -332,7 +332,7 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                     loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
-                all_val_preds.extend(torch.sigmoid(outputs).cpu().numpy().flatten())
+                all_val_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
                 del batch_X, batch_y, outputs, loss
@@ -380,7 +380,7 @@ def predict_with_model(model, X_test, batch_size=1_000_000, device='cpu', use_am
             else:
                 logits = model(batch_X)
 
-            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+            probs = torch.sigmoid(logits).detach().cpu().numpy().flatten()
             predictions.extend(probs)
 
             del batch_X, logits
