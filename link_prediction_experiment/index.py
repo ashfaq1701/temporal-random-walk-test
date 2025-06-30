@@ -186,17 +186,29 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
 class EarlyStopping:
     """Early stopping callback to prevent overfitting."""
 
-    def __init__(self, patience=5, min_delta=0.0001, restore_best_weights=True):
+    def __init__(self, mode='min', patience=5, min_delta=0.0001, restore_best_weights=True):
+        """
+        Args:
+            mode (str): 'min' for loss, 'max' for metrics like AUC
+            patience (int): Number of epochs to wait without improvement
+            min_delta (float): Minimum change to qualify as improvement
+            restore_best_weights (bool): Whether to restore best model weights on stop
+        """
+        assert mode in ['min', 'max']
+        self.mode = mode
         self.patience = patience
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights
-        self.best_loss = float('inf')
+        self.best_score = float('inf') if mode == 'min' else -float('inf')
         self.counter = 0
         self.best_weights = None
 
-    def __call__(self, val_loss, model):
-        if val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
+    def __call__(self, current_score, model):
+        improved = (current_score < self.best_score - self.min_delta) if self.mode == 'min' else (
+                    current_score > self.best_score + self.min_delta)
+
+        if improved:
+            self.best_score = current_score
             self.counter = 0
             if self.restore_best_weights:
                 self.best_weights = model.state_dict().copy()
@@ -208,6 +220,7 @@ class EarlyStopping:
                 model.load_state_dict(self.best_weights)
             return True
         return False
+
 
 
 def create_link_prediction_model(input_dim, device='cpu'):
@@ -234,51 +247,49 @@ def create_link_prediction_model(input_dim, device='cpu'):
 def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                                 batch_size=1_000_000, learning_rate=0.001,
                                 epochs=20, device='cpu', patience=5, use_amp=True):
-    """Train link prediction neural network model."""
+    """
+    Train a binary classification model for link prediction.
+
+    Args:
+        model: PyTorch model
+        X_train, y_train: Training data
+        X_val, y_val: Validation data
+    """
     logger.info(f"Training neural network on {len(X_train):,} samples with batch size {batch_size:,}")
 
     use_amp = use_amp and device == 'cuda'
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
-    early_stopping = EarlyStopping(patience=patience)
+    early_stopping = EarlyStopping(mode='max', patience=patience)
 
-    # Initialize mixed precision scaler
     scaler = GradScaler() if use_amp else None
     if use_amp:
         logger.info("Mixed precision training enabled")
 
     # Convert to tensors
-    X_train_tensor = torch.FloatTensor(X_train)
-    y_train_tensor = torch.FloatTensor(y_train).unsqueeze(1)
-    X_val_tensor = torch.FloatTensor(X_val)
-    y_val_tensor = torch.FloatTensor(y_val).unsqueeze(1)
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
+    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
 
-    # Create dataloaders
-    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+    # Dataloaders
+    train_loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor),
+                              batch_size=batch_size, shuffle=True, pin_memory=(device == 'cuda'))
+    val_loader = DataLoader(TensorDataset(X_val_tensor, y_val_tensor),
+                            batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
 
-    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
-
-    # Training history
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
 
-    logger.info(f'Starting training for {epochs} epochs...')
-
     for epoch in range(epochs):
-        # Training phase
         model.train()
-        train_loss = 0.0
-        train_batches = 0
-        all_train_preds = []
-        all_train_targets = []
+        total_train_loss = 0.0
+        all_train_preds, all_train_targets = [], []
 
-        for batch_X, batch_y in train_dataloader:
+        for batch_X, batch_y in train_loader:
             batch_X = batch_X.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-
             if use_amp:
                 with torch.amp.autocast('cuda'):
                     outputs = model(batch_X)
@@ -292,32 +303,24 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                 loss.backward()
                 optimizer.step()
 
-            train_loss += loss.item()
-            train_batches += 1
+            total_train_loss += loss.item()
+            all_train_preds.extend(torch.sigmoid(outputs).cpu().numpy().flatten())
+            all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
-            # Collect predictions for AUC
-            with torch.no_grad():
-                train_probs = torch.sigmoid(outputs).cpu().numpy().flatten()
-                all_train_preds.extend(train_probs)
-                all_train_targets.extend(batch_y.cpu().numpy().flatten())
-
-            # Clean up GPU memory
             del batch_X, batch_y, outputs, loss
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
-        avg_train_loss = train_loss / train_batches
+        avg_train_loss = total_train_loss / len(train_loader)
         train_auc = roc_auc_score(all_train_targets, all_train_preds) if len(set(all_train_targets)) > 1 else 0.0
 
-        # Validation phase
+        # Validation
         model.eval()
-        val_loss = 0.0
-        val_batches = 0
-        all_val_preds = []
-        all_val_targets = []
+        total_val_loss = 0.0
+        all_val_preds, all_val_targets = [], []
 
         with torch.no_grad():
-            for batch_X, batch_y in val_dataloader:
+            for batch_X, batch_y in val_loader:
                 batch_X = batch_X.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
 
@@ -329,34 +332,27 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                     outputs = model(batch_X)
                     loss = criterion(outputs, batch_y)
 
-                val_loss += loss.item()
-                val_batches += 1
-
-                probs = torch.sigmoid(outputs).cpu().numpy().flatten()
-                all_val_preds.extend(probs)
+                total_val_loss += loss.item()
+                all_val_preds.extend(torch.sigmoid(outputs).cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
                 del batch_X, batch_y, outputs, loss
                 if device == 'cuda':
                     torch.cuda.empty_cache()
 
-        avg_val_loss = val_loss / val_batches
+        avg_val_loss = total_val_loss / len(val_loader)
         val_auc = roc_auc_score(all_val_targets, all_val_preds) if len(set(all_val_targets)) > 1 else 0.0
 
-        # Store metrics
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
 
-        # Log progress
-        logger.info(f"Epoch {epoch + 1:3d}/{epochs}: "
-                    f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
+        logger.info(f"Epoch {epoch+1}/{epochs} — Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
                     f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
-        # Early stopping
-        if early_stopping(avg_val_loss, model):
-            logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+        if early_stopping(val_auc, model):
+            logger.info(f"Early stopping triggered at epoch {epoch+1}")
             break
 
     logger.info("Training completed")
@@ -364,34 +360,31 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
 
 
 def predict_with_model(model, X_test, batch_size=1_000_000, device='cpu', use_amp=True):
-    """Make predictions using trained model with DataLoader (same as training)."""
+    """Make predictions using a trained binary classification model."""
     model.eval()
     predictions = []
     use_amp = use_amp and device == 'cuda'
 
     logger.info(f"Making predictions on {len(X_test):,} samples with batch size {batch_size:,}")
 
-    # Convert to tensor and create DataLoader (same as training)
-    X_test_tensor = torch.FloatTensor(X_test)
-    test_dataset = TensorDataset(X_test_tensor)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+    X_tensor = torch.tensor(X_test, dtype=torch.float32)
+    test_loader = DataLoader(TensorDataset(X_tensor),
+                             batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
 
     with torch.no_grad():
-        for batch_idx, (batch_X,) in enumerate(test_dataloader):
+        for (batch_X,) in test_loader:
             batch_X = batch_X.to(device, non_blocking=True)
 
             if use_amp:
                 with torch.amp.autocast('cuda'):
-                    batch_logits = model(batch_X)
-                    batch_pred = torch.sigmoid(batch_logits).cpu().numpy().flatten()
+                    logits = model(batch_X)
             else:
-                batch_logits = model(batch_X)
-                batch_pred = torch.sigmoid(batch_logits).cpu().numpy().flatten()
+                logits = model(batch_X)
 
-            predictions.extend(batch_pred)
+            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+            predictions.extend(probs)
 
-            # Clean up GPU memory (same as training)
-            del batch_X, batch_logits
+            del batch_X, logits
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
