@@ -101,7 +101,7 @@ def split_dataset(data_file_path):
 
 def create_dataset_with_negative_edges(ds_sources, ds_targets,
                                        sources_to_exclude, targets_to_exclude,
-                                       is_directed, neg_ratio=1.0, random_state=42):
+                                       is_directed, negative_edges_per_positive, random_state=42):
     """
     Create a dataset combining positive and negative edges.
 
@@ -111,7 +111,7 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
         sources_to_exclude (array-like): Source nodes to exclude for negatives
         targets_to_exclude (array-like): Target nodes to exclude for negatives
         is_directed (bool): Whether the graph is directed
-        neg_ratio (float): Number of negative samples per positive edge
+        negative_edges_per_positive (int): Number of negative samples per positive edge
         random_state (int): Random seed for reproducibility
 
     Returns:
@@ -121,7 +121,7 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
     random.seed(random_state)
 
     num_positive = len(ds_sources)
-    num_negative = int(num_positive * neg_ratio)
+    num_negative = int(num_positive * negative_edges_per_positive)
     logger.info(f"Creating dataset with {num_positive:,} positive edges and {num_negative:,} negatives")
 
     # Get all unique nodes
@@ -565,12 +565,12 @@ def train_embeddings_streaming_approach(train_sources, train_targets, train_time
     return global_embeddings
 
 
-def compute_mrr(pred_proba, labels, k):
+def compute_mrr(pred_proba, labels, negative_edges_per_positive):
     labels = np.array(labels)
     pred_proba = np.array(pred_proba)
 
     y_pred_pos = pred_proba[labels == 1]  # shape (N,)
-    y_pred_neg = pred_proba[labels == 0].reshape(-1, k)  # shape (N, k)
+    y_pred_neg = pred_proba[labels == 0].reshape(-1, negative_edges_per_positive)  # shape (N, k)
 
     y_pred_pos = y_pred_pos.reshape(-1, 1)  # shape (N, 1)
 
@@ -587,14 +587,15 @@ def evaluate_link_prediction(
         train_sources, train_targets,
         valid_sources, valid_targets,
         test_sources, test_targets,
-        node_embeddings, edge_op, is_directed,
-        n_epochs, device):
+        node_embeddings, edge_op, negative_edges_per_positive,
+        is_directed, n_epochs, device):
     train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
         train_sources,
         train_targets,
         train_sources,
         train_targets,
-        is_directed
+        is_directed,
+        negative_edges_per_positive
     )
 
     valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
@@ -602,7 +603,8 @@ def evaluate_link_prediction(
         valid_targets,
         train_sources,
         train_targets,
-        is_directed
+        is_directed,
+        negative_edges_per_positive
     )
 
     test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
@@ -610,7 +612,8 @@ def evaluate_link_prediction(
         test_targets,
         train_sources,
         train_targets,
-        is_directed
+        is_directed,
+        negative_edges_per_positive
     )
 
     train_features = create_edge_features(train_sources_combined, train_targets_combined, node_embeddings, edge_op)
@@ -643,8 +646,8 @@ def evaluate_link_prediction(
     test_recall = recall_score(test_labels_combined, test_pred, zero_division=0)
     test_f1 = f1_score(test_labels_combined, test_pred, zero_division=0)
 
-    val_mrr = compute_mrr(val_pred_proba, valid_labels_combined, 1)
-    test_mrr = compute_mrr(test_pred_proba, test_labels_combined, 1)
+    val_mrr = compute_mrr(val_pred_proba, valid_labels_combined, negative_edges_per_positive)
+    test_mrr = compute_mrr(test_pred_proba, test_labels_combined, negative_edges_per_positive)
 
     results = {
         'auc': test_auc,
@@ -671,6 +674,7 @@ def run_link_prediction_experiments(
         num_walks_per_node,
         embedding_dim,
         edge_op,
+        negative_edges_per_positive,
         n_epochs,
         full_embedding_use_gpu,
         incremental_embedding_use_gpu,
@@ -717,7 +721,7 @@ def run_link_prediction_experiments(
             train_sources, train_targets,
             val_sources, val_targets,
             test_sources, test_targets,
-            streaming_embeddings, edge_op,
+            streaming_embeddings, edge_op, negative_edges_per_positive,
             is_directed, n_epochs, device
         )
 
@@ -755,7 +759,7 @@ def run_link_prediction_experiments(
             train_sources, train_targets,
             val_sources, val_targets,
             test_sources, test_targets,
-            full_embeddings, edge_op,
+            full_embeddings, edge_op, negative_edges_per_positive,
             is_directed, n_epochs, device
         )
 
@@ -827,6 +831,9 @@ if __name__ == '__main__':
                         choices=['average', 'hadamard', 'weighted-l1', 'weighted-l2'],
                         help='Edge operation for combining node embeddings')
 
+    parser.add_argument('--negative_edges_per_positive', type=int, default=1,
+                        help='Number of negative edges per positive edge')
+
     # Training parameters
     parser.add_argument('--n_epochs', type=int, default=10,
                         help='Number of epochs for neural network training')
@@ -860,6 +867,7 @@ if __name__ == '__main__':
         num_walks_per_node=args.num_walks_per_node,
         embedding_dim=args.embedding_dim,
         edge_op=args.edge_op,
+        negative_edges_per_positive=args.negative_edges_per_positive,
         n_epochs=args.n_epochs,
         full_embedding_use_gpu=args.full_embedding_use_gpu,
         incremental_embedding_use_gpu=args.incremental_embedding_use_gpu,
