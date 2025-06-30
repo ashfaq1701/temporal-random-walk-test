@@ -364,15 +364,21 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
 
 
 def predict_with_model(model, X_test, batch_size=1_000_000, device='cpu', use_amp=True):
-    """Make predictions using trained model."""
+    """Make predictions using trained model with DataLoader (same as training)."""
     model.eval()
     predictions = []
     use_amp = use_amp and device == 'cuda'
 
+    logger.info(f"Making predictions on {len(X_test):,} samples with batch size {batch_size:,}")
+
+    # Convert to tensor and create DataLoader (same as training)
+    X_test_tensor = torch.FloatTensor(X_test)
+    test_dataset = TensorDataset(X_test_tensor)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
+
     with torch.no_grad():
-        for i in range(0, len(X_test), batch_size):
-            end_idx = min(i + batch_size, len(X_test))
-            batch_X = torch.FloatTensor(X_test[i:end_idx]).to(device)
+        for batch_idx, (batch_X,) in enumerate(test_dataloader):
+            batch_X = batch_X.to(device, non_blocking=True)
 
             if use_amp:
                 with torch.amp.autocast('cuda'):
@@ -384,10 +390,12 @@ def predict_with_model(model, X_test, batch_size=1_000_000, device='cpu', use_am
 
             predictions.extend(batch_pred)
 
+            # Clean up GPU memory (same as training)
             del batch_X, batch_logits
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
+    logger.info("Prediction completed")
     return np.array(predictions)
 
 
