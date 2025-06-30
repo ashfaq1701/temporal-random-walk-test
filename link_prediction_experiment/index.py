@@ -18,7 +18,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.amp import GradScaler
 from torch.utils.data import DataLoader, TensorDataset
-from tgb.linkproppred.evaluate import Evaluator
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -566,25 +565,22 @@ def train_embeddings_streaming_approach(train_sources, train_targets, train_time
     return global_embeddings
 
 
-def extract_y_pred_pos_neg(pred_proba, labels, k):
-    """
-    Given predictions and binary labels, extract y_pred_pos and y_pred_neg
-    for use with TGB Evaluator.
+def compute_mrr(pred_proba, labels, k):
+    labels = np.array(labels)
+    pred_proba = np.array(pred_proba)
 
-    Assumes format: [pos, neg_1, ..., neg_k, pos, neg_1, ..., neg_k, ...]
-    """
-    labels = torch.tensor(labels)
-    pred_proba = torch.tensor(pred_proba)
+    y_pred_pos = pred_proba[labels == 1]  # shape (N,)
+    y_pred_neg = pred_proba[labels == 0].reshape(-1, k)  # shape (N, k)
 
-    pos_mask = labels == 1
-    y_pred_pos = pred_proba[pos_mask]
+    y_pred_pos = y_pred_pos.reshape(-1, 1)  # shape (N, 1)
 
-    y_pred_neg = pred_proba[~pos_mask].view(-1, k)
+    optimistic_rank = (y_pred_neg > y_pred_pos).sum(axis=1)  # shape (N,)
+    pessimistic_rank = (y_pred_neg >= y_pred_pos).sum(axis=1)  # shape (N,)
 
-    assert y_pred_pos.shape[0] == y_pred_neg.shape[0], \
-        "Mismatch: each pos must be followed by k negatives"
+    ranking_list = 0.5 * (optimistic_rank + pessimistic_rank) + 1
+    mrr_list = 1. / ranking_list.astype(np.float32)
 
-    return y_pred_pos, y_pred_neg
+    return mrr_list.mean()
 
 
 def evaluate_link_prediction(
@@ -647,22 +643,8 @@ def evaluate_link_prediction(
     test_recall = recall_score(test_labels_combined, test_pred, zero_division=0)
     test_f1 = f1_score(test_labels_combined, test_pred, zero_division=0)
 
-    val_y_pred_pos, val_y_pred_neg = extract_y_pred_pos_neg(val_pred_proba, valid_labels_combined, 1)
-    test_y_pred_pos, test_y_pred_neg = extract_y_pred_pos_neg(test_pred_proba, test_labels_combined, 1)
-
-    evaluator = Evaluator(name="Link Prediction")
-
-    val_mrr = evaluator.eval({
-        "y_pred_pos": val_y_pred_pos,
-        "y_pred_neg": val_y_pred_neg,
-        "eval_metric": ["mrr"]
-    })["mrr"]
-
-    test_mrr = evaluator.eval({
-        "y_pred_pos": test_y_pred_pos,
-        "y_pred_neg": test_y_pred_neg,
-        "eval_metric": ["mrr"]
-    })["mrr"]
+    val_mrr = compute_mrr(val_pred_proba, valid_labels_combined, 1)
+    test_mrr = compute_mrr(test_pred_proba, test_labels_combined, 1)
 
     results = {
         'auc': test_auc,
