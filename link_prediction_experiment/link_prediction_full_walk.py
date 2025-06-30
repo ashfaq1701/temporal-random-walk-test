@@ -186,7 +186,7 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
 class EarlyStopping:
     """Early stopping callback to prevent overfitting."""
 
-    def __init__(self, patience=3, min_delta=0.0001, restore_best_weights=True):
+    def __init__(self, patience=5, min_delta=0.0001, restore_best_weights=True):
         self.patience = patience
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights
@@ -233,7 +233,7 @@ def create_link_prediction_model(input_dim, device='cpu'):
 
 def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
                                 batch_size=1_000_000, learning_rate=0.001,
-                                epochs=20, device='cpu', patience=3, use_amp=True):
+                                epochs=20, device='cpu', patience=5, use_amp=True):
     """Train link prediction neural network model."""
     logger.info(f"Training neural network on {len(X_train):,} samples with batch size {batch_size:,}")
 
@@ -534,7 +534,7 @@ def evaluate_link_prediction(
     history = train_link_prediction_model(
         model, train_features, train_labels_combined,
         valid_features, valid_labels_combined,
-        epochs=n_epochs, device=device, patience=3
+        epochs=n_epochs, device=device, patience=5
     )
 
     # Make predictions
