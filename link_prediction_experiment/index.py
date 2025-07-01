@@ -711,7 +711,7 @@ def run_link_prediction_experiments(
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
     streaming_results = {
-        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'training_history': []
+        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'val_mrr': [], 'test_mrr': [], 'training_history': []
     }
 
     for run in range(n_runs):
@@ -749,7 +749,7 @@ def run_link_prediction_experiments(
     )
 
     full_results = {
-        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'training_history': []
+        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'val_mrr': [], 'test_mrr': [], 'training_history': []
     }
 
     for run in range(n_runs):
