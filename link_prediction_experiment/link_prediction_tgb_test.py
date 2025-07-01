@@ -595,7 +595,7 @@ def run_link_prediction_experiments(
             dataset_name,
             dataset.val_mask,
             dataset.ns_sampler,
-            'validation',
+            'val',
             full_embeddings,
             edge_op,
             device
