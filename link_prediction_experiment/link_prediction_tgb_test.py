@@ -400,7 +400,8 @@ def train_link_prediction_model(
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=tgb_collate_fn)
 
-    model = create_link_prediction_model(embedding_store, device)
+    input_dim = len(next(iter(embedding_store.values())))
+    model = create_link_prediction_model(input_dim, device)
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
@@ -411,6 +412,7 @@ def train_link_prediction_model(
     for epoch in range(n_epochs):
         model.train()
         total_loss = 0
+        num_train_samples = 0
         y_true_train = []
         y_score_train = []
 
@@ -424,11 +426,14 @@ def train_link_prediction_model(
             loss.backward()
             optimizer.step()
 
+            batch_size = labels.size(0)
             total_loss += loss.item() * len(labels)
+            num_train_samples += batch_size
+
             y_true_train.extend(labels.cpu().numpy())
             y_score_train.extend(logits.detach().cpu().numpy())
 
-        avg_train_loss = total_loss / len(train_loader.dataset)
+        avg_train_loss = total_loss / num_train_samples
         train_auc = roc_auc_score(y_true_train, y_score_train)
 
         # Validation
@@ -449,7 +454,7 @@ def train_link_prediction_model(
                 y_true_val.extend(labels.cpu().numpy())
                 y_score_val.extend(logits.detach().cpu().numpy())
 
-        avg_val_loss = val_loss_total / len(val_loader.dataset)
+        avg_val_loss = val_loss_total / len(y_score_val)
         val_auc = roc_auc_score(y_true_val, y_score_val)
 
         # Record history
@@ -470,7 +475,7 @@ def train_link_prediction_model(
     return model, history
 
 
-def evaluate_link_prediction_model(model, tgb_dataset: LinkPropPredDataset, dataset_name, mask, neg_sampler, split_mode, embedding_store, edge_op):
+def evaluate_link_prediction_model(model, tgb_dataset: LinkPropPredDataset, dataset_name, mask, neg_sampler, split_mode, embedding_store, edge_op, device):
     model.eval()
     evaluator = Evaluator(name=dataset_name)
     perf_list = []
@@ -517,7 +522,7 @@ def evaluate_link_prediction_model(model, tgb_dataset: LinkPropPredDataset, data
                     )
                     for s, d in zip(all_srcs, all_tgts)
                 ]
-                edge_feats = torch.stack(edge_feats).to(model.device)  # (1+K, D)
+                edge_feats = torch.stack(edge_feats).to(device)  # (1+K, D)
 
                 scores = model(edge_feats).squeeze().cpu().numpy()
 
@@ -592,7 +597,8 @@ def run_link_prediction_experiments(
             dataset.ns_sampler,
             'validation',
             full_embeddings,
-            edge_op
+            edge_op,
+            device
         )
 
         current_test_results = evaluate_link_prediction_model(
@@ -603,7 +609,8 @@ def run_link_prediction_experiments(
             dataset.ns_sampler,
             'test',
             full_embeddings,
-            edge_op
+            edge_op,
+            device
         )
 
         full_results['training_history'].append(history)
@@ -612,13 +619,13 @@ def run_link_prediction_experiments(
             if key not in full_results['valid']:
                 full_results['valid'][key] = []
 
-            full_results[key].append(current_valid_results[key])
+            full_results['valid'][key].append(current_valid_results[key])
 
         for key in current_test_results.keys():
-            if key not in full_results['valid']:
-                full_results['valid'][key] = []
+            if key not in full_results['test']:
+                full_results['test'][key] = []
 
-            full_results[key].append(current_test_results[key])
+            full_results['test'][key].append(current_test_results[key])
 
     logger.info(f"\nFull Approach Results:")
     logger.info(f"MRR (Validation): {np.mean(full_results['valid']['mrr']):.4f} ± {np.std(full_results['valid']['mrr']):.4f}")
