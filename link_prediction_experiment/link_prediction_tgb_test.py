@@ -1,5 +1,5 @@
 import argparse
-import json
+import pickle
 import logging
 import random
 import warnings
@@ -627,8 +627,8 @@ def run_link_prediction_experiments(
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-        with open(output_path, 'w') as f:
-            json.dump(full_results, f, indent=2, default=lambda x: x.tolist() if isinstance(x, np.ndarray) else x)
+        with open(output_path, 'wb') as f:
+            pickle.dump(results, f)
         logger.info(f"Results saved to {output_path}")
 
     return full_results
