@@ -652,7 +652,7 @@ def run_link_prediction_experiments(
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, 'wb') as f:
-            pickle.dump(results, f)
+            pickle.dump(full_results, f)
         logger.info(f"Results saved to {output_path}")
 
     return full_results
