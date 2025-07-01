@@ -164,22 +164,36 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
     negative_edges = list(negative_edges)[:num_negative]
     neg_sources, neg_targets = zip(*negative_edges)
 
-    # Create labels
-    pos_labels = np.ones(num_positive, dtype=np.int32)
-    neg_labels = np.zeros(num_negative, dtype=np.int32)
+    k = negative_edges_per_positive
+    assert len(neg_sources) == num_positive * k
 
-    all_sources = np.concatenate([ds_sources, neg_sources])
-    all_targets = np.concatenate([ds_targets, neg_targets])
-    all_labels  = np.concatenate([pos_labels, neg_labels])
+    all_sources, all_targets, all_labels = [], [], []
 
-    # Shuffle dataset
-    indices = np.random.permutation(len(all_sources))
-    all_sources = all_sources[indices]
-    all_targets = all_targets[indices]
-    all_labels  = all_labels[indices]
+    for i in range(num_positive):
+        pos_src = ds_sources[i]
+        pos_tgt = ds_targets[i]
+        neg_srcs = neg_sources[i * k:(i + 1) * k]
+        neg_tgts = neg_targets[i * k:(i + 1) * k]
+
+        group_srcs = list(neg_srcs)
+        group_tgts = list(neg_tgts)
+        group_labels = [0] * k
+
+        insert_idx = np.random.randint(0, k + 1)
+
+        group_srcs.insert(insert_idx, pos_src)
+        group_tgts.insert(insert_idx, pos_tgt)
+        group_labels.insert(insert_idx, 1)
+
+        all_sources.extend(group_srcs)
+        all_targets.extend(group_tgts)
+        all_labels.extend(group_labels)
+
+    all_sources = np.array(all_sources)
+    all_targets = np.array(all_targets)
+    all_labels = np.array(all_labels)
 
     logger.info(f"Final dataset: {len(all_sources):,} edges (positive + negative)")
-
     return all_sources, all_targets, all_labels
 
 
