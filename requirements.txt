@@ -10,4 +10,4 @@ scipy
 networkx
 gensim
 torch
-py-tgb
+external/TGB
