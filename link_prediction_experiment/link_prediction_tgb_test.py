@@ -616,6 +616,8 @@ def run_link_prediction_experiments(
 
             full_results['test'][key].append(current_test_results[key])
 
+        logger.info(f"Run #{run + 1} - MRR (validation): {current_valid_results['mrr']}, MRR (test): {current_test_results['mrr']}")
+
     logger.info(f"\nFull Approach Results:")
     logger.info(f"MRR (Validation): {np.mean(full_results['valid']['mrr']):.4f} ± {np.std(full_results['valid']['mrr']):.4f}")
     logger.info(f"MRR (Test): {np.mean(full_results['test']['mrr']):.4f} ± {np.std(full_results['test']['mrr']):.4f}")
