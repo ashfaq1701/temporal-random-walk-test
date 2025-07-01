@@ -124,15 +124,25 @@ class LinkPredictionTGBDataset(Dataset):
             split_mode=split_mode
         )
 
+        K = len(neg_lists[0])
+
         for i in tqdm(range(len(sources))):
             src, dst = sources[i], targets[i]
             pos_feat = create_edge_feature(src, dst, embedding_store, edge_op)
             self.pos_features.append(torch.tensor(pos_feat, dtype=torch.float32))
 
-            neg_feats = []
-            for neg_dst in neg_lists[i]:
-                feat = create_edge_feature(src, neg_dst, embedding_store, edge_op)
-                neg_feats.append(torch.tensor(feat, dtype=torch.float32))
+            neg_dsts = list(neg_lists[i])
+
+            if len(neg_dsts) < K:
+                logger.warning(f"Padding sample {i}: got {len(neg_dsts)} negatives, expected {K}")
+                neg_dsts += [neg_dsts[-1]] * (K - len(neg_dsts))
+            elif len(neg_dsts) > K:
+                neg_dsts = neg_dsts[:K]
+
+            neg_feats = [
+                torch.tensor(create_edge_feature(src, neg_d, embedding_store, edge_op), dtype=torch.float32)
+                for neg_d in neg_dsts
+            ]
 
             self.neg_features.append(torch.stack(neg_feats))
 
