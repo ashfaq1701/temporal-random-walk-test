@@ -82,30 +82,23 @@ class LinkPredictionTrainDataset(Dataset):
         embedding_store,
         edge_op="hadamard"
     ):
-        self.sources = np.array(sources)
-        self.targets = np.array(targets)
-        self.labels = np.array(labels)
-        self.embedding_store = embedding_store
-        self.edge_op = edge_op
+        self.labels = torch.tensor(labels, dtype=torch.float32)
+        self.edge_features = []
 
-        assert len(self.sources) == len(self.targets) == len(self.labels), "Inconsistent dataset lengths"
+        logger.info("Caching edge features for training...")
+
+        for s, t in tqdm(zip(sources, targets), total=len(sources)):
+            feat = create_edge_feature(s, t, embedding_store, edge_op)
+            self.edge_features.append(torch.tensor(feat, dtype=torch.float32))
+
+        logger.info("Training edge feature caching complete.")
+        self.edge_features = torch.stack(self.edge_features)
 
     def __len__(self):
-        return len(self.sources)
+        return len(self.labels)
 
     def __getitem__(self, idx):
-        edge_feat = create_edge_feature(
-            self.sources[idx],
-            self.targets[idx],
-            self.embedding_store,
-            self.edge_op
-        )
-
-        # Always return CPU tensors
-        return (
-            torch.tensor(edge_feat, dtype=torch.float32),
-            torch.tensor(self.labels[idx], dtype=torch.float32)
-        )
+        return self.edge_features[idx], self.labels[idx]
 
 
 class LinkPredictionTGBDataset(Dataset):
@@ -119,41 +112,37 @@ class LinkPredictionTGBDataset(Dataset):
         split_mode="test",
         edge_op="hadamard"
     ):
-        self.sources = np.array(sources)
-        self.targets = np.array(targets)
-        self.timestamps = np.array(timestamps)
-        self.embedding_store = embedding_store
-        self.negative_sampler = negative_sampler
-        self.split_mode = split_mode
-        self.edge_op = edge_op
+        self.pos_features = []
+        self.neg_features = []
+
+        logger.info(f"Caching TGB dataset for split: {split_mode}")
+
+        neg_lists = negative_sampler.query_batch(
+            torch.tensor(sources),
+            torch.tensor(targets),
+            torch.tensor(timestamps),
+            split_mode=split_mode
+        )
+
+        for i in tqdm(range(len(sources))):
+            src, dst = sources[i], targets[i]
+            pos_feat = create_edge_feature(src, dst, embedding_store, edge_op)
+            self.pos_features.append(torch.tensor(pos_feat, dtype=torch.float32))
+
+            neg_feats = []
+            for neg_dst in neg_lists[i]:
+                feat = create_edge_feature(src, neg_dst, embedding_store, edge_op)
+                neg_feats.append(torch.tensor(feat, dtype=torch.float32))
+
+            self.neg_features.append(torch.stack(neg_feats))
+
+        logger.info("TGB edge feature caching complete.")
 
     def __len__(self):
-        return len(self.sources)
+        return len(self.pos_features)
 
     def __getitem__(self, idx):
-        src = self.sources[idx]
-        dst = self.targets[idx]
-        ts = self.timestamps[idx]
-
-        # Get positive edge feature
-        pos_feat = create_edge_feature(src, dst, self.embedding_store, self.edge_op)
-
-        # Get negatives (1 vs K)
-        neg_dsts = self.negative_sampler.query_batch(
-            torch.tensor([src]),
-            torch.tensor([dst]),
-            torch.tensor([ts]),
-            split_mode=self.split_mode
-        )[0]
-
-        neg_feats = []
-        for neg_dst in neg_dsts:
-            neg_feat = create_edge_feature(src, neg_dst, self.embedding_store, self.edge_op)
-            neg_feats.append(torch.tensor(neg_feat, dtype=torch.float32))
-
-        neg_feats = torch.stack(neg_feats, dim=0)  # (K, D)
-
-        return torch.tensor(pos_feat, dtype=torch.float32), neg_feats
+        return self.pos_features[idx], self.neg_features[idx]
 
 
 def tgb_collate_fn(batch):
@@ -397,7 +386,7 @@ def train_link_prediction_model(
     )
 
     # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=tgb_collate_fn)
 
     input_dim = len(next(iter(embedding_store.values())))
