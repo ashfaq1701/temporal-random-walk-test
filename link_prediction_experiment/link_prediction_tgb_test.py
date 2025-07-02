@@ -436,7 +436,7 @@ def train_link_prediction_model(
 
             optimizer.zero_grad()
             if scaler:
-                with autocast():
+                with autocast(device_type='cuda', enabled=(device == 'cuda')):
                     logits = model(edge_feats).squeeze()
                     loss = criterion(logits, labels)
                 scaler.scale(loss).backward()
@@ -558,7 +558,7 @@ def evaluate_link_prediction_model(
                 edge_feats = torch.stack(edge_feats).to(device)  # (1+K, D)
 
                 # AMP inference
-                with autocast(enabled=use_amp):
+                with autocast(device_type='cuda', enabled=use_amp):
                     scores = model(edge_feats).squeeze().cpu().numpy()
 
                 # TGB Evaluator expects: 1 positive vs many negatives
