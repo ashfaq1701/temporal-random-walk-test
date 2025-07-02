@@ -328,7 +328,7 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
                                    embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
     logger.info("Training embeddings with full approach")
 
-    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1, timescale_bound=500)
+    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1)
     temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
 
     logger.info(f'Generating {num_walks_per_node} walks per node with max length {walk_length} using {edge_picker} picker.')
