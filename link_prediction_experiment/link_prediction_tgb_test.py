@@ -342,6 +342,8 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
         walk_direction="Forward_In_Time"
     )
 
+    logger.info(f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}')
+
     logger.info(f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
 
     walks_backward, _, walk_lengths_backward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
@@ -352,10 +354,12 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
         walk_direction="Backward_In_Time"
     )
 
+    logger.info(f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}')
+
     walks = np.concatenate([walks_forward, walks_backward], axis=0)
     walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
 
-    logger.info(f'Generated {len(walks)} walks. Mean length: {np.mean(walk_lengths):.2f}')
+    logger.info(f'Generated {len(walks)} walks in total. Mean length: {np.mean(walk_lengths):.2f}')
 
     # Clean walks
     clean_walks = []
