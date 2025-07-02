@@ -324,18 +324,18 @@ class LinkPredictionModel(nn.Module):
 
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
-                                   is_directed, walk_length, num_walks_per_node,
+                                   is_directed, walk_length, num_walks_per_node, edge_picker,
                                    embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
     logger.info("Training embeddings with full approach")
 
-    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1)
+    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1, timescale_bound=100)
     temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
 
     # Generate walks
     walks, timestamps, walk_lengths = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
         max_walk_len=walk_length,
         num_walks_per_node=num_walks_per_node,
-        walk_bias='ExponentialIndex',
+        walk_bias=edge_picker,
         initial_edge_bias='Uniform',
         walk_direction="Backward_In_Time"
     )
@@ -577,6 +577,7 @@ def run_link_prediction_experiments(
         is_directed,
         walk_length,
         num_walks_per_node,
+        edge_picker,
         embedding_dim,
         edge_op,
         negative_edges_per_positive,
@@ -607,7 +608,7 @@ def run_link_prediction_experiments(
 
     full_embeddings = train_embeddings_full_approach(
         train_sources, train_targets, train_timestamps,
-        is_directed, walk_length, num_walks_per_node,
+        is_directed, walk_length, num_walks_per_node, edge_picker,
         embedding_dim, full_embedding_use_gpu, word2vec_n_workers
     )
 
@@ -692,6 +693,8 @@ if __name__ == '__main__':
                         help='Maximum length of random walks')
     parser.add_argument('--num_walks_per_node', type=int, default=10,
                         help='Number of walks to generate per node')
+    parser.add_argument('--edge_picker',  type=str, default='ExponentialIndex',
+                        help='Edge picker. Can be ExponentialIndex, ExponentialWeight, Linear, Uniform')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
     parser.add_argument('--edge_op', type=str, default='hadamard',
@@ -727,6 +730,7 @@ if __name__ == '__main__':
         is_directed=args.is_directed,
         walk_length=args.walk_length,
         num_walks_per_node=args.num_walks_per_node,
+        edge_picker=args.edge_picker,
         embedding_dim=args.embedding_dim,
         edge_op=args.edge_op,
         negative_edges_per_positive=args.negative_edges_per_positive,
