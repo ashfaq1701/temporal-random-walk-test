@@ -355,9 +355,9 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
 
 
 def train_link_prediction_model(
-        tgb_dataset: LinkPropPredDataset, embedding_store, edge_op,
-        negative_edges_per_positive, is_directed,
-        n_epochs, device, learning_rate=1e-4, patience=5
+    tgb_dataset: LinkPropPredDataset, embedding_store, edge_op,
+    negative_edges_per_positive, is_directed,
+    n_epochs, device, learning_rate=1e-4, patience=5
 ):
     train_sources = tgb_dataset.full_data['sources'][tgb_dataset.train_mask]
     train_targets = tgb_dataset.full_data['destinations'][tgb_dataset.train_mask]
@@ -375,7 +375,6 @@ def train_link_prediction_model(
         negative_edges_per_positive
     )
 
-    # Datasets
     train_dataset = LinkPredictionTrainDataset(
         sources=train_sources_combined,
         targets=train_targets_combined,
@@ -384,7 +383,6 @@ def train_link_prediction_model(
         edge_op=edge_op
     )
 
-    # TGB-based val dataset (one-vs-K negatives)
     val_dataset = LinkPredictionTGBDataset(
         sources=valid_sources,
         targets=valid_targets,
@@ -395,7 +393,6 @@ def train_link_prediction_model(
         edge_op=edge_op
     )
 
-    # DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=tgb_collate_fn)
 
@@ -405,6 +402,7 @@ def train_link_prediction_model(
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     early_stopping = EarlyStopping(mode='max', patience=patience)
+    scaler = torch.cuda.amp.GradScaler() if device == 'cuda' else None
 
     history = defaultdict(list)
 
@@ -420,13 +418,21 @@ def train_link_prediction_model(
             labels = labels.to(device)
 
             optimizer.zero_grad()
-            logits = model(edge_feats).squeeze()
-            loss = criterion(logits, labels)
-            loss.backward()
-            optimizer.step()
+            if scaler:
+                with torch.cuda.amp.autocast():
+                    logits = model(edge_feats).squeeze()
+                    loss = criterion(logits, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                logits = model(edge_feats).squeeze()
+                loss = criterion(logits, labels)
+                loss.backward()
+                optimizer.step()
 
             batch_size = labels.size(0)
-            total_loss += loss.item() * len(labels)
+            total_loss += loss.item() * batch_size
             num_train_samples += batch_size
 
             y_true_train.extend(labels.cpu().numpy())
@@ -453,10 +459,9 @@ def train_link_prediction_model(
                 y_true_val.extend(labels.cpu().numpy())
                 y_score_val.extend(logits.detach().cpu().numpy())
 
-        avg_val_loss = val_loss_total / len(y_score_val)
+        avg_val_loss = val_loss_total / len(y_true_val)
         val_auc = roc_auc_score(y_true_val, y_score_val)
 
-        # Record history
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
         history['train_auc'].append(train_auc)
@@ -474,7 +479,17 @@ def train_link_prediction_model(
     return model, history
 
 
-def evaluate_link_prediction_model(model, tgb_dataset: LinkPropPredDataset, dataset_name, mask, neg_sampler, split_mode, embedding_store, edge_op, device):
+def evaluate_link_prediction_model(
+    model,
+    tgb_dataset: LinkPropPredDataset,
+    dataset_name,
+    mask,
+    neg_sampler,
+    split_mode,
+    embedding_store,
+    edge_op,
+    device
+):
     model.eval()
     evaluator = Evaluator(name=dataset_name)
     perf_list = []
@@ -488,6 +503,8 @@ def evaluate_link_prediction_model(model, tgb_dataset: LinkPropPredDataset, data
 
     num_edges = len(pos_src_all)
     num_batches = math.ceil(num_edges / BATCH_SIZE)
+
+    use_amp = device == 'cuda'
 
     with torch.no_grad():
         for batch_idx in tqdm(range(num_batches), desc=f"Evaluating ({split_mode})"):
@@ -523,7 +540,9 @@ def evaluate_link_prediction_model(model, tgb_dataset: LinkPropPredDataset, data
                 ]
                 edge_feats = torch.stack(edge_feats).to(device)  # (1+K, D)
 
-                scores = model(edge_feats).squeeze().cpu().numpy()
+                # AMP inference
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    scores = model(edge_feats).squeeze().cpu().numpy()
 
                 # TGB Evaluator expects: 1 positive vs many negatives
                 input_dict = {
