@@ -435,8 +435,14 @@ def train_link_prediction_model(
     input_dim = len(next(iter(embedding_store.values())))
     model = LinkPredictionModel(input_dim).to(device)
 
+    num_positives = np.sum(train_labels_combined == 1)
+    num_negatives = np.sum(train_labels_combined == 0)
+    pos_weight_value = num_negatives / num_positives
+    pos_weight = torch.tensor(pos_weight_value, dtype=torch.float32).to(device)
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = nn.BCEWithLogitsLoss()
     early_stopping = EarlyStopping(mode='max', patience=patience)
     scaler = GradScaler() if device == 'cuda' else None
 
