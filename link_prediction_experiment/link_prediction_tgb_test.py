@@ -331,16 +331,29 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
     temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1)
     temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
 
-    logger.info(f'Generating {num_walks_per_node} walks per node with max length {walk_length} using {edge_picker} picker.')
+    logger.info(f'Generating forward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
 
     # Generate walks
-    walks, timestamps, walk_lengths = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+    walks_forward, _, walk_lengths_forward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
         max_walk_len=walk_length,
-        num_walks_per_node=num_walks_per_node,
+        num_walks_per_node=num_walks_per_node // 2,
+        walk_bias=edge_picker,
+        initial_edge_bias='Uniform',
+        walk_direction="Forward_In_Time"
+    )
+
+    logger.info(f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
+    walks_backward, _, walk_lengths_backward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+        max_walk_len=walk_length,
+        num_walks_per_node=num_walks_per_node // 2,
         walk_bias=edge_picker,
         initial_edge_bias='Uniform',
         walk_direction="Backward_In_Time"
     )
+
+    walks = np.concatenate([walks_forward, walks_backward], axis=0)
+    walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
 
     logger.info(f'Generated {len(walks)} walks. Mean length: {np.mean(walk_lengths):.2f}')
 
