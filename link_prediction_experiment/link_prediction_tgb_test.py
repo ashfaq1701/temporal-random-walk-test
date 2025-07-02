@@ -11,6 +11,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score
@@ -286,24 +287,39 @@ class EarlyStopping:
         return False
 
 
-def create_link_prediction_model(input_dim, device='cpu'):
-    hidden_dim1 = max(64, input_dim // 2)
-    hidden_dim2 = max(32, input_dim // 4)
+class LinkPredictionModel(nn.Module):
+    def __init__(self, input_dim, hidden_dims=(256, 128, 64), dropout=0.2):
+        super().__init__()
+        h1, h2, h3 = hidden_dims
 
-    model = nn.Sequential(
-        nn.Linear(input_dim, hidden_dim1),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(hidden_dim1, hidden_dim2),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(hidden_dim2, 16),
-        nn.ReLU(),
-        nn.Dropout(0.1),
-        nn.Linear(16, 1)
-    ).to(device)
+        self.fc1 = nn.Linear(input_dim, h1)
+        self.fc2 = nn.Linear(h1, h2)
+        self.fc3 = nn.Linear(h2, h3)
+        self.fc_out = nn.Linear(h3, 1)
 
-    return model
+        self.proj1 = nn.Linear(input_dim, h2) if input_dim != h2 else nn.Identity()
+        self.proj2 = nn.Linear(h1, h3) if h1 != h3 else nn.Identity()
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x1 = F.relu(self.fc1(x))
+        x1 = self.dropout(x1)
+
+        x2 = F.relu(self.fc2(x1))
+        x2 = self.dropout(x2)
+
+        # Residual connection from input → x2
+        x2_res = x2 + self.proj1(x)  # (input_dim → h2)
+
+        x3 = F.relu(self.fc3(x2_res))
+        x3 = self.dropout(x3)
+
+        # Residual connection from x1 → x3
+        x3_res = x3 + self.proj2(x1)  # (h1 → h3)
+
+        out = self.fc_out(x3_res)
+        return out
 
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
@@ -397,7 +413,7 @@ def train_link_prediction_model(
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=tgb_collate_fn)
 
     input_dim = len(next(iter(embedding_store.values())))
-    model = create_link_prediction_model(input_dim, device)
+    model = LinkPredictionModel(input_dim).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
