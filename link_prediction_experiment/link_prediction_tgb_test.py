@@ -19,6 +19,7 @@ from temporal_random_walk import TemporalRandomWalk
 from tgb.linkproppred.dataset import LinkPropPredDataset
 from tgb.linkproppred.evaluate import Evaluator
 from torch.utils.data import DataLoader, Dataset
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -418,7 +419,7 @@ def train_link_prediction_model(
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     early_stopping = EarlyStopping(mode='max', patience=patience)
-    scaler = torch.cuda.amp.GradScaler() if device == 'cuda' else None
+    scaler = GradScaler() if device == 'cuda' else None
 
     history = defaultdict(list)
 
@@ -435,7 +436,7 @@ def train_link_prediction_model(
 
             optimizer.zero_grad()
             if scaler:
-                with torch.cuda.amp.autocast():
+                with autocast():
                     logits = model(edge_feats).squeeze()
                     loss = criterion(logits, labels)
                 scaler.scale(loss).backward()
@@ -557,7 +558,7 @@ def evaluate_link_prediction_model(
                 edge_feats = torch.stack(edge_feats).to(device)  # (1+K, D)
 
                 # AMP inference
-                with torch.cuda.amp.autocast(enabled=use_amp):
+                with autocast(enabled=use_amp):
                     scores = model(edge_feats).squeeze().cpu().numpy()
 
                 # TGB Evaluator expects: 1 positive vs many negatives
