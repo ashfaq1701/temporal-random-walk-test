@@ -452,7 +452,7 @@ def create_edge_features(sources, targets, node_embeddings, edge_op):
 
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
-                                   is_directed, walk_length, num_walks_per_node,
+                                   is_directed, walk_length, num_walks_per_node, edge_picker,
                                    embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
     """Train embeddings using full dataset approach."""
     logger.info("Training embeddings with full approach")
@@ -460,16 +460,39 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
     temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1)
     temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
 
+    logger.info(
+        f'Generating forward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
     # Generate walks
-    walks, timestamps, walk_lengths = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+    walks_forward, _, walk_lengths_forward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
         max_walk_len=walk_length,
-        num_walks_per_node=num_walks_per_node,
-        walk_bias='ExponentialIndex',
+        num_walks_per_node=num_walks_per_node // 2,
+        walk_bias=edge_picker,
+        initial_edge_bias='Uniform',
+        walk_direction="Forward_In_Time"
+    )
+
+    logger.info(
+        f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}')
+
+    logger.info(
+        f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
+    walks_backward, _, walk_lengths_backward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+        max_walk_len=walk_length,
+        num_walks_per_node=num_walks_per_node // 2,
+        walk_bias=edge_picker,
         initial_edge_bias='Uniform',
         walk_direction="Backward_In_Time"
     )
 
-    logger.info(f'Generated {len(walks)} walks. Mean length: {np.mean(walk_lengths):.2f}')
+    logger.info(
+        f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}')
+
+    walks = np.concatenate([walks_forward, walks_backward], axis=0)
+    walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
+
+    logger.info(f'Generated {len(walks)} walks in total. Mean length: {np.mean(walk_lengths):.2f}')
 
     # Clean walks
     clean_walks = []
@@ -502,7 +525,7 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
 
 def train_embeddings_streaming_approach(train_sources, train_targets, train_timestamps,
                                         batch_ts_size, sliding_window_duration, weighted_sum_alpha,
-                                        is_directed, walk_length, num_walks_per_node,
+                                        is_directed, walk_length, num_walks_per_node, edge_picker,
                                         embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
     """Train embeddings using streaming window approach."""
     logger.info("Training embeddings with streaming approach")
@@ -540,14 +563,39 @@ def train_embeddings_streaming_approach(train_sources, train_targets, train_time
         # Add edges to temporal random walk
         temporal_random_walk.add_multiple_edges(batch_sources, batch_targets, batch_ts)
 
+        logger.info(
+            f'Generating forward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
         # Generate walks
-        walks, _, walk_lengths = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+        walks_forward, _, walk_lengths_forward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
             max_walk_len=walk_length,
-            num_walks_per_node=num_walks_per_node,
-            walk_bias='ExponentialIndex',
+            num_walks_per_node=num_walks_per_node // 2,
+            walk_bias=edge_picker,
+            initial_edge_bias='Uniform',
+            walk_direction="Forward_In_Time"
+        )
+
+        logger.info(
+            f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}')
+
+        logger.info(
+            f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
+        walks_backward, _, walk_lengths_backward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+            max_walk_len=walk_length,
+            num_walks_per_node=num_walks_per_node // 2,
+            walk_bias=edge_picker,
             initial_edge_bias='Uniform',
             walk_direction="Backward_In_Time"
         )
+
+        logger.info(
+            f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}')
+
+        walks = np.concatenate([walks_forward, walks_backward], axis=0)
+        walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
+
+        logger.info(f'Generated {len(walks)} walks in total. Mean length: {np.mean(walk_lengths):.2f}')
 
         # Clean walks
         clean_walks = []
@@ -714,6 +762,7 @@ def run_link_prediction_experiments(
         weighted_sum_alpha,
         walk_length,
         num_walks_per_node,
+        edge_picker,
         embedding_dim,
         edge_op,
         negative_edges_per_positive,
@@ -748,10 +797,19 @@ def run_link_prediction_experiments(
     logger.info("=" * 60)
 
     streaming_embeddings = train_embeddings_streaming_approach(
-        train_sources, train_targets, train_timestamps,
-        batch_ts_size, sliding_window_duration, weighted_sum_alpha,
-        is_directed, walk_length, num_walks_per_node,
-        embedding_dim, incremental_embedding_use_gpu, word2vec_n_workers
+        train_sources=train_sources,
+        train_targets=train_targets,
+        train_timestamps=train_timestamps,
+        batch_ts_size=batch_ts_size,
+        sliding_window_duration=sliding_window_duration,
+        weighted_sum_alpha=weighted_sum_alpha,
+        is_directed=is_directed,
+        walk_length=walk_length,
+        num_walks_per_node=num_walks_per_node,
+        edge_picker=edge_picker,
+        embedding_dim=embedding_dim,
+        walk_use_gpu=incremental_embedding_use_gpu,
+        word2vec_n_workers=word2vec_n_workers
     )
 
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
@@ -765,11 +823,19 @@ def run_link_prediction_experiments(
             noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_std)
 
             current_streaming_results = evaluate_link_prediction(
-                train_sources, train_targets,
-                val_sources, val_targets,
-                test_sources, test_targets,
-                noisy_embeddings, edge_op, negative_edges_per_positive,
-                is_directed, n_epochs, batch_size, device
+                train_sources=train_sources,
+                train_targets=train_targets,
+                valid_sources=val_sources,
+                valid_targets=val_targets,
+                test_sources=test_sources,
+                test_targets=test_targets,
+                node_embeddings=noisy_embeddings,
+                edge_op=edge_op,
+                negative_edges_per_positive=negative_edges_per_positive,
+                is_directed=is_directed,
+                n_epochs=n_epochs,
+                batch_size=batch_size,
+                device=device
             )
 
             for key in current_streaming_results.keys():
@@ -799,9 +865,16 @@ def run_link_prediction_experiments(
     logger.info("=" * 60)
 
     full_embeddings = train_embeddings_full_approach(
-        train_sources, train_targets, train_timestamps,
-        is_directed, walk_length, num_walks_per_node,
-        embedding_dim, full_embedding_use_gpu, word2vec_n_workers
+        train_sources=train_sources,
+        train_targets=train_targets,
+        train_timestamps=train_timestamps,
+        is_directed=is_directed,
+        walk_length=walk_length,
+        num_walks_per_node=num_walks_per_node,
+        edge_picker=edge_picker,
+        embedding_dim=embedding_dim,
+        walk_use_gpu=full_embedding_use_gpu,
+        word2vec_n_workers=word2vec_n_workers
     )
 
     full_results = {}
@@ -813,11 +886,19 @@ def run_link_prediction_experiments(
             noisy_embeddings = add_gaussian_noise(full_embeddings, noise_std)
 
             current_full_results = evaluate_link_prediction(
-                train_sources, train_targets,
-                val_sources, val_targets,
-                test_sources, test_targets,
-                noisy_embeddings, edge_op, negative_edges_per_positive,
-                is_directed, n_epochs, batch_size, device
+                train_sources=train_sources,
+                train_targets=train_targets,
+                valid_sources=val_sources,
+                valid_targets=val_targets,
+                test_sources=test_sources,
+                test_targets=test_targets,
+                node_embeddings=noisy_embeddings,
+                edge_op=edge_op,
+                negative_edges_per_positive=negative_edges_per_positive,
+                is_directed=is_directed,
+                n_epochs=n_epochs,
+                batch_size=batch_size,
+                device=device
             )
 
             for key in current_full_results.keys():
@@ -877,6 +958,8 @@ if __name__ == '__main__':
                         help='Maximum length of random walks')
     parser.add_argument('--num_walks_per_node', type=int, default=10,
                         help='Number of walks to generate per node')
+    parser.add_argument('--edge_picker', type=str, default='ExponentialIndex',
+                        help='Edge picker for random walks')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
     parser.add_argument('--edge_op', type=str, default='hadamard',
@@ -919,6 +1002,7 @@ if __name__ == '__main__':
         weighted_sum_alpha=args.weighted_sum_alpha,
         walk_length=args.walk_length,
         num_walks_per_node=args.num_walks_per_node,
+        edge_picker=args.edge_picker,
         embedding_dim=args.embedding_dim,
         edge_op=args.edge_op,
         negative_edges_per_positive=args.negative_edges_per_positive,
