@@ -2,6 +2,7 @@ import argparse
 import pickle
 import random
 from pathlib import Path
+from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ from temporal_random_walk import TemporalRandomWalk
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 
+import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -237,25 +239,39 @@ class EarlyStopping:
 
 
 
-def create_link_prediction_model(input_dim, device='cpu'):
-    """Create neural network model for link prediction."""
-    hidden_dim1 = max(64, input_dim // 2)
-    hidden_dim2 = max(32, input_dim // 4)
+class LinkPredictionModel(nn.Module):
+    def __init__(self, input_dim, hidden_dims=(256, 128, 64), dropout=0.2):
+        super().__init__()
+        h1, h2, h3 = hidden_dims
 
-    model = nn.Sequential(
-        nn.Linear(input_dim, hidden_dim1),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(hidden_dim1, hidden_dim2),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(hidden_dim2, 16),
-        nn.ReLU(),
-        nn.Dropout(0.1),
-        nn.Linear(16, 1)
-    ).to(device)
+        self.fc1 = nn.Linear(input_dim, h1)
+        self.fc2 = nn.Linear(h1, h2)
+        self.fc3 = nn.Linear(h2, h3)
+        self.fc_out = nn.Linear(h3, 1)
 
-    return model
+        self.proj1 = nn.Linear(input_dim, h2) if input_dim != h2 else nn.Identity()
+        self.proj2 = nn.Linear(h1, h3) if h1 != h3 else nn.Identity()
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        x1 = F.relu(self.fc1(x))
+        x1 = self.dropout(x1)
+
+        x2 = F.relu(self.fc2(x1))
+        x2 = self.dropout(x2)
+
+        # Residual connection from input → x2
+        x2_res = x2 + self.proj1(x)  # (input_dim → h2)
+
+        x3 = F.relu(self.fc3(x2_res))
+        x3 = self.dropout(x3)
+
+        # Residual connection from x1 → x3
+        x3_res = x3 + self.proj2(x1)  # (h1 → h3)
+
+        out = self.fc_out(x3_res)
+        return out
 
 
 def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
@@ -638,7 +654,7 @@ def evaluate_link_prediction(
         f"Classifier train: {len(train_sources_combined):,}, val: {len(valid_sources_combined):,}, test: {len(test_sources_combined):,}")
 
     input_dim = train_features.shape[1]
-    model = create_link_prediction_model(input_dim, device)
+    model = LinkPredictionModel(input_dim).to(device)
 
     history = train_link_prediction_model(
         model, train_features, train_labels_combined,
@@ -671,11 +687,23 @@ def evaluate_link_prediction(
         'f1_score': test_f1,
         'val_mrr': val_mrr,
         'test_mrr': test_mrr,
-        #'training_history': history
+        'training_history': history
     }
 
     logger.info(f"Link prediction completed - AUC: {test_auc:.4f}, Val MRR: {val_mrr:.4f}, Test MRR: {test_mrr:.4f}")
     return results
+
+
+def add_gaussian_noise(embeddings: Dict[int, np.ndarray], noise_std: float) -> Dict[int, np.ndarray]:
+    if noise_std == 0.0:
+        return embeddings.copy()
+
+    noisy_embeddings = {}
+    for node_id, embedding in embeddings.items():
+        noise = np.random.normal(1.0, noise_std, embedding.shape)
+        noisy_embeddings[node_id] = embedding * noise
+
+    return noisy_embeddings
 
 
 def run_link_prediction_experiments(
@@ -694,6 +722,7 @@ def run_link_prediction_experiments(
         incremental_embedding_use_gpu,
         link_prediction_use_gpu,
         n_runs,
+        num_noise_steps,
         word2vec_n_workers,
         output_path
 ):
@@ -711,6 +740,8 @@ def run_link_prediction_experiments(
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
 
+    noise_stds = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
+
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
     logger.info("=" * 60)
@@ -724,33 +755,48 @@ def run_link_prediction_experiments(
 
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
-    streaming_results = {
-        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'val_mrr': [], 'test_mrr': []
-    }
+    streaming_results = {}
 
-    for run in range(n_runs):
-        logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
+    for noise_std in noise_stds:
+        for run in range(n_runs):
+            logger.info(f"\n--- Noise Std: {noise_std}, Run {run + 1}/{n_runs} ---")
 
-        current_streaming_results = evaluate_link_prediction(
-            train_sources, train_targets,
-            val_sources, val_targets,
-            test_sources, test_targets,
-            streaming_embeddings, edge_op, negative_edges_per_positive,
-            is_directed, n_epochs, device
-        )
+            noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_std)
 
-        for key in current_streaming_results.keys():
-            streaming_results[key].append(current_streaming_results[key])
+            current_streaming_results = evaluate_link_prediction(
+                train_sources, train_targets,
+                val_sources, val_targets,
+                test_sources, test_targets,
+                noisy_embeddings, edge_op, negative_edges_per_positive,
+                is_directed, n_epochs, device
+            )
 
-    logger.info(f"\nStreaming Approach Results:")
-    logger.info(f"AUC: {np.mean(streaming_results['auc']):.4f} ± {np.std(streaming_results['auc']):.4f}")
-    logger.info(f"Accuracy: {np.mean(streaming_results['accuracy']):.4f} ± {np.std(streaming_results['accuracy']):.4f}")
-    logger.info(
-        f"Precision: {np.mean(streaming_results['precision']):.4f} ± {np.std(streaming_results['precision']):.4f}")
-    logger.info(f"Recall: {np.mean(streaming_results['recall']):.4f} ± {np.std(streaming_results['recall']):.4f}")
-    logger.info(f"F1-Score: {np.mean(streaming_results['f1_score']):.4f} ± {np.std(streaming_results['f1_score']):.4f}")
-    logger.info(f"MRR (Test): {np.mean(streaming_results['test_mrr']):.4f} ± {np.std(streaming_results['test_mrr']):.4f}")
-    logger.info(f"MRR (Validation): {np.mean(streaming_results['val_mrr']):.4f} ± {np.std(streaming_results['val_mrr']):.4f}")
+            for key in current_streaming_results.keys():
+                if noise_std not in streaming_results:
+                    streaming_results[noise_std] = {}
+
+                if key not in streaming_results[noise_std]:
+                    streaming_results[noise_std][key] = []
+
+                streaming_results[noise_std][key].append(current_streaming_results[key])
+
+    logger.info(f"\nStreaming Approach Results Across Noise Levels:")
+    logger.info("=" * 80)
+
+    for noise_std in noise_stds:
+        if noise_std in streaming_results:
+            logger.info(f"\nNoise Level {noise_std:.3f}:")
+            for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
+                if metric in streaming_results[noise_std]:
+                    values = streaming_results[noise_std][metric]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
+
+    logger.info("\n" + "=" * 100)
+    logger.info("SUMMARY - Key Noise Levels (All Metrics):")
+    logger.info("=" * 100)
+
 
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
@@ -762,52 +808,52 @@ def run_link_prediction_experiments(
         embedding_dim, full_embedding_use_gpu, word2vec_n_workers
     )
 
-    full_results = {
-        'auc': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1_score': [], 'val_mrr': [], 'test_mrr': []
-    }
+    full_results = {}
 
-    for run in range(n_runs):
-        logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
+    for noise_std in noise_stds:
+        for run in range(n_runs):
+            logger.info(f"\n--- Noise Std: {noise_std}, Run {run + 1}/{n_runs} ---")
 
-        current_full_results = evaluate_link_prediction(
-            train_sources, train_targets,
-            val_sources, val_targets,
-            test_sources, test_targets,
-            full_embeddings, edge_op, negative_edges_per_positive,
-            is_directed, n_epochs, device
-        )
+            noisy_embeddings = add_gaussian_noise(full_embeddings, noise_std)
 
-        for key in current_full_results.keys():
-            full_results[key].append(current_full_results[key])
+            current_full_results = evaluate_link_prediction(
+                train_sources, train_targets,
+                val_sources, val_targets,
+                test_sources, test_targets,
+                noisy_embeddings, edge_op, negative_edges_per_positive,
+                is_directed, n_epochs, device
+            )
 
-    logger.info(f"\nFull Approach Results:")
-    logger.info(f"AUC: {np.mean(full_results['auc']):.4f} ± {np.std(full_results['auc']):.4f}")
-    logger.info(f"Accuracy: {np.mean(full_results['accuracy']):.4f} ± {np.std(full_results['accuracy']):.4f}")
-    logger.info(f"Precision: {np.mean(full_results['precision']):.4f} ± {np.std(full_results['precision']):.4f}")
-    logger.info(f"Recall: {np.mean(full_results['recall']):.4f} ± {np.std(full_results['recall']):.4f}")
-    logger.info(f"F1-Score: {np.mean(full_results['f1_score']):.4f} ± {np.std(full_results['f1_score']):.4f}")
-    logger.info(f"MRR (Test): {np.mean(full_results['test_mrr']):.4f} ± {np.std(full_results['test_mrr']):.4f}")
-    logger.info(f"MRR (Validation): {np.mean(full_results['val_mrr']):.4f} ± {np.std(full_results['val_mrr']):.4f}")
+            for key in current_full_results.keys():
+                if noise_std not in full_results:
+                    full_results[noise_std] = {}
 
-    # Comparison
-    auc_diff = np.mean(streaming_results['auc']) - np.mean(full_results['auc'])
-    mrr_diff_val = np.mean(streaming_results['val_mrr'] - np.mean(full_results['val_mrr']))
-    mrr_diff_test = np.mean(streaming_results['test_mrr'] - np.mean(full_results['test_mrr']))
+                if key not in full_results[noise_std]:
+                    full_results[noise_std][key] = []
 
-    logger.info(f"\nComparison:")
-    logger.info(f"AUC Difference (Streaming - Full): {auc_diff:+.4f}")
-    logger.info(f'MRR Difference (Validation): {mrr_diff_val:+.4f}')
-    logger.info(f'MRR Difference (Test): {mrr_diff_test:+.4f}')
+                full_results[noise_std][key].append(full_results[key])
+
+    logger.info(f"\nFull Approach Results Across Noise Levels:")
+    logger.info("=" * 80)
+
+    for noise_std in noise_stds:
+        if noise_std in full_results:
+            logger.info(f"\nNoise Level {noise_std:.3f}:")
+            for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
+                if metric in full_results[noise_std]:
+                    values = full_results[noise_std][metric]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
+
+    logger.info("\n" + "=" * 100)
+    logger.info("SUMMARY - Key Noise Levels (All Metrics):")
+    logger.info("=" * 100)
 
     if output_path:
         results = {
             'full_approach': full_results,
-            'streaming_approach': streaming_results,
-            'comparison': {
-                'auc_difference': auc_diff,
-                'mrr_val_difference': mrr_diff_val,
-                'mrr_test_difference': mrr_diff_test
-            }
+            'streaming_approach': streaming_results
         }
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -849,7 +895,8 @@ if __name__ == '__main__':
                         help='Number of negative edges per positive edge')
 
     # Training parameters
-    parser.add_argument('--n_epochs', type=int, default=10,
+    parser.add_argument('--num_noise_steps', type=int, default=20, help="Number of noise steps")
+    parser.add_argument('--n_epochs', type=int, default=5,
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
                         help='Number of experimental runs for averaging results')
@@ -887,6 +934,7 @@ if __name__ == '__main__':
         incremental_embedding_use_gpu=args.incremental_embedding_use_gpu,
         link_prediction_use_gpu=args.link_prediction_use_gpu,
         n_runs=args.n_runs,
+        num_noise_steps=args.num_noise_steps,
         word2vec_n_workers=args.word2vec_n_workers,
         output_path=args.output_path
     )
