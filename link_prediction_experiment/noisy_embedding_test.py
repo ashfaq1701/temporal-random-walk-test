@@ -275,7 +275,7 @@ class LinkPredictionModel(nn.Module):
 
 
 def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
-                                batch_size=1_000_000, learning_rate=0.001,
+                                batch_size, learning_rate=0.001,
                                 epochs=20, device='cpu', patience=5, use_amp=True):
     """
     Train a binary classification model for link prediction.
@@ -389,7 +389,7 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
     return history
 
 
-def predict_with_model(model, X_test, batch_size=1_000_000, device='cpu', use_amp=True):
+def predict_with_model(model, X_test, batch_size, device='cpu', use_amp=True):
     """Make predictions using a trained binary classification model."""
     model.eval()
     predictions = []
@@ -618,7 +618,7 @@ def evaluate_link_prediction(
         valid_sources, valid_targets,
         test_sources, test_targets,
         node_embeddings, edge_op, negative_edges_per_positive,
-        is_directed, n_epochs, device):
+        is_directed, n_epochs, batch_size, device):
     train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
         train_sources,
         train_targets,
@@ -659,13 +659,13 @@ def evaluate_link_prediction(
     history = train_link_prediction_model(
         model, train_features, train_labels_combined,
         valid_features, valid_labels_combined,
-        epochs=n_epochs, device=device, patience=5
+        batch_size=batch_size, epochs=n_epochs, device=device, patience=5
     )
 
     # Make predictions
     logger.info("Making final predictions...")
-    val_pred_proba = predict_with_model(model, valid_features, device=device)
-    test_pred_proba = predict_with_model(model, test_features, device=device)
+    val_pred_proba = predict_with_model(model, valid_features, batch_size=batch_size, device=device)
+    test_pred_proba = predict_with_model(model, test_features, batch_size=batch_size, device=device)
 
     test_pred = (test_pred_proba > 0.5).astype(int)
 
@@ -722,6 +722,7 @@ def run_link_prediction_experiments(
         incremental_embedding_use_gpu,
         link_prediction_use_gpu,
         n_runs,
+        batch_size,
         num_noise_steps,
         word2vec_n_workers,
         output_path
@@ -768,7 +769,7 @@ def run_link_prediction_experiments(
                 val_sources, val_targets,
                 test_sources, test_targets,
                 noisy_embeddings, edge_op, negative_edges_per_positive,
-                is_directed, n_epochs, device
+                is_directed, n_epochs, batch_size, device
             )
 
             for key in current_streaming_results.keys():
@@ -816,7 +817,7 @@ def run_link_prediction_experiments(
                 val_sources, val_targets,
                 test_sources, test_targets,
                 noisy_embeddings, edge_op, negative_edges_per_positive,
-                is_directed, n_epochs, device
+                is_directed, n_epochs, batch_size, device
             )
 
             for key in current_full_results.keys():
@@ -891,6 +892,7 @@ if __name__ == '__main__':
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
                         help='Number of experimental runs for averaging results')
+    parser.add_argument('--batch_size', type=int, default=1_000_000, help='Batch size for training')
 
     # GPU settings
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
@@ -925,6 +927,7 @@ if __name__ == '__main__':
         incremental_embedding_use_gpu=args.incremental_embedding_use_gpu,
         link_prediction_use_gpu=args.link_prediction_use_gpu,
         n_runs=args.n_runs,
+        batch_size=batch_size,
         num_noise_steps=args.num_noise_steps,
         word2vec_n_workers=args.word2vec_n_workers,
         output_path=args.output_path
