@@ -927,7 +927,7 @@ if __name__ == '__main__':
         incremental_embedding_use_gpu=args.incremental_embedding_use_gpu,
         link_prediction_use_gpu=args.link_prediction_use_gpu,
         n_runs=args.n_runs,
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         num_noise_steps=args.num_noise_steps,
         word2vec_n_workers=args.word2vec_n_workers,
         output_path=args.output_path
