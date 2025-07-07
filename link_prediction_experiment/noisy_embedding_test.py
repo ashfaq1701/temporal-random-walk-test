@@ -793,11 +793,6 @@ def run_link_prediction_experiments(
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
 
-    logger.info("\n" + "=" * 100)
-    logger.info("SUMMARY - Key Noise Levels (All Metrics):")
-    logger.info("=" * 100)
-
-
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
     logger.info("=" * 60)
@@ -831,7 +826,7 @@ def run_link_prediction_experiments(
                 if key not in full_results[noise_std]:
                     full_results[noise_std][key] = []
 
-                full_results[noise_std][key].append(full_results[key])
+                full_results[noise_std][key].append(current_full_results[key])
 
     logger.info(f"\nFull Approach Results Across Noise Levels:")
     logger.info("=" * 80)
@@ -845,10 +840,6 @@ def run_link_prediction_experiments(
                     mean_val = np.mean(values)
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
-
-    logger.info("\n" + "=" * 100)
-    logger.info("SUMMARY - Key Noise Levels (All Metrics):")
-    logger.info("=" * 100)
 
     if output_path:
         results = {
