@@ -169,31 +169,39 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
     k = negative_edges_per_positive
     assert len(neg_sources) == num_positive * k
 
-    all_sources, all_targets, all_labels = [], [], []
+    # Convert to numpy arrays
+    neg_sources = np.array(neg_sources)
+    neg_targets = np.array(neg_targets)
+    ds_sources = np.array(ds_sources)
+    ds_targets = np.array(ds_targets)
 
+    # Reshape negatives into groups
+    neg_sources_grouped = neg_sources.reshape(num_positive, k)
+    neg_targets_grouped = neg_targets.reshape(num_positive, k)
+
+    # Create positive arrays
+    pos_sources = ds_sources.reshape(-1, 1)  # (num_positive, 1)
+    pos_targets = ds_targets.reshape(-1, 1)  # (num_positive, 1)
+
+    # Concatenate positives and negatives
+    all_sources_grouped = np.concatenate([pos_sources, neg_sources_grouped], axis=1)  # (num_positive, k+1)
+    all_targets_grouped = np.concatenate([pos_targets, neg_targets_grouped], axis=1)  # (num_positive, k+1)
+
+    # Create labels (first column is positive)
+    labels_grouped = np.zeros((num_positive, k + 1), dtype=np.int32)
+    labels_grouped[:, 0] = 1  # First position is positive
+
+    # Shuffle each row to randomize positive position
     for i in range(num_positive):
-        pos_src = ds_sources[i]
-        pos_tgt = ds_targets[i]
-        neg_srcs = neg_sources[i * k:(i + 1) * k]
-        neg_tgts = neg_targets[i * k:(i + 1) * k]
+        perm = np.random.permutation(k + 1)
+        all_sources_grouped[i] = all_sources_grouped[i, perm]
+        all_targets_grouped[i] = all_targets_grouped[i, perm]
+        labels_grouped[i] = labels_grouped[i, perm]
 
-        group_srcs = list(neg_srcs)
-        group_tgts = list(neg_tgts)
-        group_labels = [0] * k
-
-        insert_idx = np.random.randint(0, k + 1)
-
-        group_srcs.insert(insert_idx, pos_src)
-        group_tgts.insert(insert_idx, pos_tgt)
-        group_labels.insert(insert_idx, 1)
-
-        all_sources.extend(group_srcs)
-        all_targets.extend(group_tgts)
-        all_labels.extend(group_labels)
-
-    all_sources = np.array(all_sources)
-    all_targets = np.array(all_targets)
-    all_labels = np.array(all_labels)
+    # Flatten to final arrays
+    all_sources = all_sources_grouped.flatten()
+    all_targets = all_targets_grouped.flatten()
+    all_labels = labels_grouped.flatten()
 
     logger.info(f"Final dataset: {len(all_sources):,} edges (positive + negative)")
     return all_sources, all_targets, all_labels
