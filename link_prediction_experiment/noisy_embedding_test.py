@@ -240,9 +240,14 @@ class EarlyStopping:
 
 
 class LinkPredictionModel(nn.Module):
-    def __init__(self, input_dim, hidden_dims=(256, 128, 64), dropout=0.2):
+    def __init__(self, node_embeddings_tensor, edge_op, hidden_dims=(256, 128, 64), dropout=0.2):
         super().__init__()
+
+        self.edge_op = edge_op
+        self.register_buffer('node_embeddings', node_embeddings_tensor.clone())
+
         h1, h2, h3 = hidden_dims
+        input_dim = node_embeddings_tensor.shape[1]
 
         self.fc1 = nn.Linear(input_dim, h1)
         self.fc2 = nn.Linear(h1, h2)
@@ -254,15 +259,29 @@ class LinkPredictionModel(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        x1 = F.relu(self.fc1(x))
+    def forward(self, upstream_nodes, downstream_nodes):
+        upstream_emb = self.node_embeddings[upstream_nodes]
+        downstream_emb = self.node_embeddings[downstream_nodes]
+
+        if self.edge_op == 'average':
+            edge_features = (upstream_emb + downstream_emb) / 2
+        elif self.edge_op == 'hadamard':
+            edge_features = upstream_emb * downstream_emb
+        elif self.edge_op == 'weighted-l1':
+            edge_features = torch.abs(upstream_emb - downstream_emb)
+        elif self.edge_op == 'weighted-l2':
+            edge_features = (upstream_emb - downstream_emb) ** 2
+        else:
+            raise ValueError(f"Unknown edge_op: {self.edge_op}")
+
+        x1 = F.relu(self.fc1(edge_features))
         x1 = self.dropout(x1)
 
         x2 = F.relu(self.fc2(x1))
         x2 = self.dropout(x2)
 
         # Residual connection from input → x2
-        x2_res = x2 + self.proj1(x)  # (input_dim → h2)
+        x2_res = x2 + self.proj1(edge_features)  # (input_dim → h2)
 
         x3 = F.relu(self.fc3(x2_res))
         x3 = self.dropout(x3)
@@ -274,18 +293,12 @@ class LinkPredictionModel(nn.Module):
         return out
 
 
-def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
+def train_link_prediction_model(model,
+                                X_sources_train, X_targets_train, y_train,
+                                X_sources_val, X_targets_val, y_val,
                                 batch_size, learning_rate=0.001,
                                 epochs=20, device='cpu', patience=5, use_amp=True):
-    """
-    Train a binary classification model for link prediction.
-
-    Args:
-        model: PyTorch model
-        X_train, y_train: Training data
-        X_val, y_val: Validation data
-    """
-    logger.info(f"Training neural network on {len(X_train):,} samples with batch size {batch_size:,}")
+    logger.info(f"Training neural network on {len(X_sources_train):,} samples with batch size {batch_size:,}")
 
     use_amp = use_amp and device == 'cuda'
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -297,15 +310,18 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
         logger.info("Mixed precision training enabled")
 
     # Convert to tensors
-    X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+    X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long)
+    X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long)
     y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
+
+    X_sources_val_tensor = torch.tensor(X_sources_val, dtype=torch.long)
+    X_targets_val_tensor = torch.tensor(X_targets_val, dtype=torch.long)
     y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
 
     # Dataloaders
-    train_loader = DataLoader(TensorDataset(X_train_tensor, y_train_tensor),
+    train_loader = DataLoader(TensorDataset(X_sources_train_tensor, X_targets_train_tensor, y_train_tensor),
                               batch_size=batch_size, shuffle=True, pin_memory=(device == 'cuda'))
-    val_loader = DataLoader(TensorDataset(X_val_tensor, y_val_tensor),
+    val_loader = DataLoader(TensorDataset(X_sources_val_tensor, X_targets_val_tensor, y_val_tensor),
                             batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
@@ -315,20 +331,21 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
         total_train_loss = 0.0
         all_train_preds, all_train_targets = [], []
 
-        for batch_X, batch_y in train_loader:
-            batch_X = batch_X.to(device, non_blocking=True)
+        for batch_sources, batch_targets, batch_y in train_loader:
+            batch_sources = batch_sources.to(device, non_blocking=True)
+            batch_targets = batch_targets.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
             optimizer.zero_grad()
             if use_amp:
                 with torch.amp.autocast('cuda'):
-                    outputs = model(batch_X)
+                    outputs = model(batch_sources, batch_targets)
                     loss = criterion(outputs, batch_y)
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                outputs = model(batch_X)
+                outputs = model(batch_sources, batch_targets)
                 loss = criterion(outputs, batch_y)
                 loss.backward()
                 optimizer.step()
@@ -337,7 +354,7 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
             all_train_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
             all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
-            del batch_X, batch_y, outputs, loss
+            del batch_sources, batch_targets, batch_y, outputs, loss
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
@@ -350,23 +367,24 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
         all_val_preds, all_val_targets = [], []
 
         with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                batch_X = batch_X.to(device, non_blocking=True)
+            for batch_sources, batch_targets, batch_y in val_loader:
+                batch_sources = batch_sources.to(device, non_blocking=True)
+                batch_targets = batch_targets.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
 
                 if use_amp:
                     with torch.amp.autocast('cuda'):
-                        outputs = model(batch_X)
+                        outputs = model(batch_sources, batch_targets)
                         loss = criterion(outputs, batch_y)
                 else:
-                    outputs = model(batch_X)
+                    outputs = model(batch_sources, batch_targets)
                     loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
                 all_val_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
-                del batch_X, batch_y, outputs, loss
+                del batch_sources, batch_targets, batch_y, outputs, loss
                 if device == 'cuda':
                     torch.cuda.empty_cache()
 
@@ -378,77 +396,50 @@ def train_link_prediction_model(model, X_train, y_train, X_val, y_val,
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
 
-        logger.info(f"Epoch {epoch+1}/{epochs} — Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
+        logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
                     f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
         if early_stopping(val_auc, model):
-            logger.info(f"Early stopping triggered at epoch {epoch+1}")
+            logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
     logger.info("Training completed")
     return history
 
 
-def predict_with_model(model, X_test, batch_size, device='cpu', use_amp=True):
+def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device='cpu', use_amp=True):
     """Make predictions using a trained binary classification model."""
     model.eval()
     predictions = []
     use_amp = use_amp and device == 'cuda'
 
-    logger.info(f"Making predictions on {len(X_test):,} samples with batch size {batch_size:,}")
+    logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
 
-    X_tensor = torch.tensor(X_test, dtype=torch.float32)
-    test_loader = DataLoader(TensorDataset(X_tensor),
+    X_sources_tensor = torch.tensor(X_sources_test, dtype=torch.long)
+    X_targets_tensor = torch.tensor(X_targets_test, dtype=torch.long)
+    test_loader = DataLoader(TensorDataset(X_sources_tensor, X_targets_tensor),
                              batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
 
     with torch.no_grad():
-        for (batch_X,) in test_loader:
-            batch_X = batch_X.to(device, non_blocking=True)
+        for batch_sources, batch_targets in test_loader:
+            batch_sources = batch_sources.to(device, non_blocking=True)
+            batch_targets = batch_targets.to(device, non_blocking=True)
 
             if use_amp:
                 with torch.amp.autocast('cuda'):
-                    logits = model(batch_X)
+                    logits = model(batch_sources, batch_targets)
             else:
-                logits = model(batch_X)
+                logits = model(batch_sources, batch_targets)
 
             probs = torch.sigmoid(logits).detach().cpu().numpy().flatten()
             predictions.extend(probs)
 
-            del batch_X, logits
+            del batch_sources, batch_targets, logits
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
     logger.info("Prediction completed")
     return np.array(predictions)
-
-
-def create_edge_features(sources, targets, node_embeddings, edge_op):
-    """Create edge features from node embeddings."""
-    logger.info(f"Creating {edge_op} edge features for {len(sources):,} edges")
-
-    # Get embedding dimension
-    embedding_dim = len(next(iter(node_embeddings.values())))
-    edge_features = np.zeros((len(sources), embedding_dim), dtype=np.float32)
-
-    for i, (src, tgt) in enumerate(zip(sources, targets)):
-        src_emb = node_embeddings.get(src, np.zeros(embedding_dim))
-        tgt_emb = node_embeddings.get(tgt, np.zeros(embedding_dim))
-
-        if edge_op == 'average':
-            edge_emb = (src_emb + tgt_emb) / 2
-        elif edge_op == 'hadamard':
-            edge_emb = src_emb * tgt_emb
-        elif edge_op == 'weighted-l1':
-            edge_emb = np.abs(src_emb - tgt_emb)
-        elif edge_op == 'weighted-l2':
-            edge_emb = (src_emb - tgt_emb) ** 2
-        else:
-            raise ValueError(f"Unknown edge_op: {edge_op}")
-
-        edge_features[i] = edge_emb
-
-    logger.info("Edge feature creation completed")
-    return edge_features
 
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
@@ -643,6 +634,23 @@ def train_embeddings_streaming_approach(train_sources, train_targets, train_time
     return global_embeddings
 
 
+def get_embedding_tensor(embedding_dict, device):
+    if embedding_dict is None:
+        raise ValueError("Node embeddings dictionary is empty")
+
+    max_node_id = max(embedding_dict.keys())
+    embedding_dim = len(next(iter(embedding_dict.values())))
+    tensor_size = max_node_id + 1
+
+    embedding_tensor = torch.full((tensor_size, embedding_dim), 0.0,
+                                  dtype=torch.float32, device=device)
+
+    for node_id, embedding in embedding_dict.items():
+        embedding_tensor[node_id] = torch.tensor(embedding, dtype=torch.float32, device=device)
+
+    return embedding_tensor
+
+
 def compute_mrr(pred_proba, labels, negative_edges_per_positive):
     labels = np.array(labels)
     pred_proba = np.array(pred_proba)
@@ -665,7 +673,7 @@ def evaluate_link_prediction(
         train_sources, train_targets,
         valid_sources, valid_targets,
         test_sources, test_targets,
-        node_embeddings, edge_op, negative_edges_per_positive,
+        embedding_tensor, edge_op, negative_edges_per_positive,
         is_directed, n_epochs, batch_size, device):
     train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
         train_sources,
@@ -694,26 +702,22 @@ def evaluate_link_prediction(
         negative_edges_per_positive
     )
 
-    train_features = create_edge_features(train_sources_combined, train_targets_combined, node_embeddings, edge_op)
-    valid_features = create_edge_features(valid_sources_combined, valid_targets_combined, node_embeddings, edge_op)
-    test_features = create_edge_features(test_sources_combined, test_targets_combined, node_embeddings, edge_op)
-
     logger.info(
         f"Classifier train: {len(train_sources_combined):,}, val: {len(valid_sources_combined):,}, test: {len(test_sources_combined):,}")
 
-    input_dim = train_features.shape[1]
-    model = LinkPredictionModel(input_dim).to(device)
+    model = LinkPredictionModel(embedding_tensor, edge_op).to(device)
 
     history = train_link_prediction_model(
-        model, train_features, train_labels_combined,
-        valid_features, valid_labels_combined,
+        model,
+        train_sources_combined, train_targets_combined, train_labels_combined,
+        valid_sources_combined, valid_targets_combined, valid_labels_combined,
         batch_size=batch_size, epochs=n_epochs, device=device, patience=5
     )
 
     # Make predictions
     logger.info("Making final predictions...")
-    val_pred_proba = predict_with_model(model, valid_features, batch_size=batch_size, device=device)
-    test_pred_proba = predict_with_model(model, test_features, batch_size=batch_size, device=device)
+    val_pred_proba = predict_with_model(model, valid_sources_combined, valid_targets_combined, batch_size=batch_size, device=device)
+    test_pred_proba = predict_with_model(model, test_sources_combined, test_targets_combined, batch_size=batch_size, device=device)
 
     test_pred = (test_pred_proba > 0.5).astype(int)
 
@@ -829,7 +833,7 @@ def run_link_prediction_experiments(
                 valid_targets=val_targets,
                 test_sources=test_sources,
                 test_targets=test_targets,
-                node_embeddings=noisy_embeddings,
+                embedding_tensor=get_embedding_tensor(noisy_embeddings, device),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 is_directed=is_directed,
@@ -892,7 +896,7 @@ def run_link_prediction_experiments(
                 valid_targets=val_targets,
                 test_sources=test_sources,
                 test_targets=test_targets,
-                node_embeddings=noisy_embeddings,
+                embedding_tensor=get_embedding_tensor(noisy_embeddings, device),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 is_directed=is_directed,
