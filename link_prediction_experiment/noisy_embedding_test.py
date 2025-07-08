@@ -103,27 +103,12 @@ def split_dataset(data_file_path):
 
 def create_dataset_with_negative_edges(ds_sources, ds_targets,
                                        sources_to_exclude, targets_to_exclude,
-                                       is_directed, negative_edges_per_positive, random_state=42):
-    """
-    Create a dataset combining positive and negative edges.
-
-    Args:
-        ds_sources (array-like): Source nodes for positive edges
-        ds_targets (array-like): Target nodes for positive edges
-        sources_to_exclude (array-like): Source nodes to exclude for negatives
-        targets_to_exclude (array-like): Target nodes to exclude for negatives
-        is_directed (bool): Whether the graph is directed
-        negative_edges_per_positive (int): Number of negative samples per positive edge
-        random_state (int): Random seed for reproducibility
-
-    Returns:
-        tuple: (all_sources, all_targets, labels) where labels = 1 for positive, 0 for negative
-    """
+                                       is_directed, k, random_state=42):
     np.random.seed(random_state)
     random.seed(random_state)
 
     num_positive = len(ds_sources)
-    num_negative = int(num_positive * negative_edges_per_positive)
+    num_negative = int(num_positive * k)
     logger.info(f"Creating dataset with {num_positive:,} positive edges and {num_negative:,} negatives")
 
     # Get all unique nodes
@@ -154,36 +139,33 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
         u_valid, v_valid = u[mask], v[mask]
         candidate_pairs = set(zip(u_valid, v_valid))
 
-        new_negatives = candidate_pairs - edges_to_exclude
-        negative_edges.extend(list(new_negatives))
+        new_negatives = list(candidate_pairs - edges_to_exclude)
+
+        needed = num_negative - len(negative_edges)
+        negative_edges.extend(new_negatives[:needed])
 
         logger.info(f"Attempt {attempts}: Collected {len(negative_edges):,}/{num_negative:,} negatives")
 
     if len(negative_edges) < num_negative:
         logger.warning("Not enough valid negatives found. Returning fewer samples.")
 
-    # Final trim
-    negative_edges = list(negative_edges)[:num_negative]
     neg_sources, neg_targets = zip(*negative_edges)
+    neg_sources = np.array(neg_sources, dtype=np.int32)[:num_negative]
+    neg_targets = np.array(neg_targets, dtype=np.int32)[:num_negative]
 
-    k = negative_edges_per_positive
-    assert len(neg_sources) == num_positive * k
+    # Convert positives
+    ds_sources = np.array(ds_sources, dtype=np.int32)
+    ds_targets = np.array(ds_targets, dtype=np.int32)
 
-    # Convert to numpy arrays
-    neg_sources = np.array(neg_sources)
-    neg_targets = np.array(neg_targets)
-    ds_sources = np.array(ds_sources)
-    ds_targets = np.array(ds_targets)
-
-    # Reshape negatives into groups
+    # Group negatives (num_positive, k)
     neg_sources_grouped = neg_sources.reshape(num_positive, k)
     neg_targets_grouped = neg_targets.reshape(num_positive, k)
 
-    # Create positive arrays
-    pos_sources = ds_sources.reshape(-1, 1)  # (num_positive, 1)
-    pos_targets = ds_targets.reshape(-1, 1)  # (num_positive, 1)
+    # Reshape positives (num_positive, 1)
+    pos_sources = ds_sources.reshape(-1, 1)
+    pos_targets = ds_targets.reshape(-1, 1)
 
-    # Concatenate positives and negatives
+    # Concatenate positives + negatives
     all_sources_grouped = np.concatenate([pos_sources, neg_sources_grouped], axis=1)  # (num_positive, k+1)
     all_targets_grouped = np.concatenate([pos_targets, neg_targets_grouped], axis=1)  # (num_positive, k+1)
 
@@ -191,12 +173,17 @@ def create_dataset_with_negative_edges(ds_sources, ds_targets,
     labels_grouped = np.zeros((num_positive, k + 1), dtype=np.int32)
     labels_grouped[:, 0] = 1  # First position is positive
 
-    # Shuffle each row to randomize positive position
-    for i in range(num_positive):
-        perm = np.random.permutation(k + 1)
-        all_sources_grouped[i] = all_sources_grouped[i, perm]
-        all_targets_grouped[i] = all_targets_grouped[i, perm]
-        labels_grouped[i] = labels_grouped[i, perm]
+    rng = np.random.default_rng()
+
+    # Generate random permutations for all rows at once
+    perms = np.array([rng.permutation(k + 1) for _ in range(num_positive)])  # (num_positive, k+1)
+
+    # Apply permutations vectorized using advanced indexing
+    row_indices = np.arange(num_positive)[:, None]  # (num_positive, 1)
+
+    all_sources_grouped = all_sources_grouped[row_indices, perms]
+    all_targets_grouped = all_targets_grouped[row_indices, perms]
+    labels_grouped = labels_grouped[row_indices, perms]
 
     # Flatten to final arrays
     all_sources = all_sources_grouped.flatten()
