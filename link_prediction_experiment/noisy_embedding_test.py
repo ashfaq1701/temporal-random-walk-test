@@ -670,66 +670,40 @@ def compute_mrr(pred_proba, labels, negative_edges_per_positive):
 
 
 def evaluate_link_prediction(
-        train_sources, train_targets,
-        valid_sources, valid_targets,
-        test_sources, test_targets,
+        train_sources, train_targets, train_labels,
+        valid_sources, valid_targets, valid_labels,
+        test_sources, test_targets, test_labels,
         embedding_tensor, edge_op, negative_edges_per_positive,
-        is_directed, n_epochs, batch_size, device):
-    train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
-        train_sources,
-        train_targets,
-        train_sources,
-        train_targets,
-        is_directed,
-        negative_edges_per_positive
-    )
-
-    valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
-        valid_sources,
-        valid_targets,
-        train_sources,
-        train_targets,
-        is_directed,
-        negative_edges_per_positive
-    )
-
-    test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
-        test_sources,
-        test_targets,
-        train_sources,
-        train_targets,
-        is_directed,
-        negative_edges_per_positive
-    )
+        n_epochs, batch_size, device):
 
     logger.info(
-        f"Classifier train: {len(train_sources_combined):,}, val: {len(valid_sources_combined):,}, test: {len(test_sources_combined):,}")
+        f"Classifier train: {len(train_sources):,}, val: {len(valid_sources):,}, test: {len(test_sources):,}")
 
     model = LinkPredictionModel(embedding_tensor, edge_op).to(device)
 
     history = train_link_prediction_model(
         model,
-        train_sources_combined, train_targets_combined, train_labels_combined,
-        valid_sources_combined, valid_targets_combined, valid_labels_combined,
+        train_sources, train_targets, train_labels,
+        valid_sources, valid_targets, valid_labels,
         batch_size=batch_size, epochs=n_epochs, device=device, patience=5
     )
 
     # Make predictions
     logger.info("Making final predictions...")
-    val_pred_proba = predict_with_model(model, valid_sources_combined, valid_targets_combined, batch_size=batch_size, device=device)
-    test_pred_proba = predict_with_model(model, test_sources_combined, test_targets_combined, batch_size=batch_size, device=device)
+    val_pred_proba = predict_with_model(model, valid_sources, valid_targets, batch_size=batch_size, device=device)
+    test_pred_proba = predict_with_model(model, test_sources, test_targets, batch_size=batch_size, device=device)
 
     test_pred = (test_pred_proba > 0.5).astype(int)
 
     # Calculate standard metrics for test set
-    test_auc = roc_auc_score(test_labels_combined, test_pred_proba)
-    test_accuracy = accuracy_score(test_labels_combined, test_pred)
-    test_precision = precision_score(test_labels_combined, test_pred, zero_division=0)
-    test_recall = recall_score(test_labels_combined, test_pred, zero_division=0)
-    test_f1 = f1_score(test_labels_combined, test_pred, zero_division=0)
+    test_auc = roc_auc_score(test_labels, test_pred_proba)
+    test_accuracy = accuracy_score(test_labels, test_pred)
+    test_precision = precision_score(test_labels, test_pred, zero_division=0)
+    test_recall = recall_score(test_labels, test_pred, zero_division=0)
+    test_f1 = f1_score(test_labels, test_pred, zero_division=0)
 
-    val_mrr = compute_mrr(val_pred_proba, valid_labels_combined, negative_edges_per_positive)
-    test_mrr = compute_mrr(test_pred_proba, test_labels_combined, negative_edges_per_positive)
+    val_mrr = compute_mrr(val_pred_proba, valid_labels, negative_edges_per_positive)
+    test_mrr = compute_mrr(test_pred_proba, test_labels, negative_edges_per_positive)
 
     results = {
         'auc': test_auc,
@@ -794,6 +768,33 @@ def run_link_prediction_experiments(
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
 
+    train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
+        train_sources,
+        train_targets,
+        train_sources,
+        train_targets,
+        is_directed,
+        negative_edges_per_positive
+    )
+
+    valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
+        val_sources,
+        val_targets,
+        train_sources,
+        train_targets,
+        is_directed,
+        negative_edges_per_positive
+    )
+
+    test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
+        test_sources,
+        test_targets,
+        train_sources,
+        train_targets,
+        is_directed,
+        negative_edges_per_positive
+    )
+
     noise_stds = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
 
     logger.info("=" * 60)
@@ -827,16 +828,18 @@ def run_link_prediction_experiments(
             noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_std)
 
             current_streaming_results = evaluate_link_prediction(
-                train_sources=train_sources,
-                train_targets=train_targets,
-                valid_sources=val_sources,
-                valid_targets=val_targets,
-                test_sources=test_sources,
-                test_targets=test_targets,
+                train_sources=train_sources_combined,
+                train_targets=train_targets_combined,
+                train_labels=train_labels_combined,
+                valid_sources=valid_sources_combined,
+                valid_targets=valid_targets_combined,
+                valid_labels=valid_labels_combined,
+                test_sources=test_sources_combined,
+                test_targets=test_targets_combined,
+                test_labels=test_labels_combined,
                 embedding_tensor=get_embedding_tensor(noisy_embeddings, device),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
-                is_directed=is_directed,
                 n_epochs=n_epochs,
                 batch_size=batch_size,
                 device=device
@@ -890,16 +893,18 @@ def run_link_prediction_experiments(
             noisy_embeddings = add_gaussian_noise(full_embeddings, noise_std)
 
             current_full_results = evaluate_link_prediction(
-                train_sources=train_sources,
-                train_targets=train_targets,
-                valid_sources=val_sources,
-                valid_targets=val_targets,
-                test_sources=test_sources,
-                test_targets=test_targets,
+                train_sources=train_sources_combined,
+                train_targets=train_targets_combined,
+                train_labels=train_labels_combined,
+                valid_sources=valid_sources_combined,
+                valid_targets=valid_targets_combined,
+                valid_labels=valid_labels_combined,
+                test_sources=test_sources_combined,
+                test_targets=test_targets_combined,
+                test_labels=test_labels_combined,
                 embedding_tensor=get_embedding_tensor(noisy_embeddings, device),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
-                is_directed=is_directed,
                 n_epochs=n_epochs,
                 batch_size=batch_size,
                 device=device
