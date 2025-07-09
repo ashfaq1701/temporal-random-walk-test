@@ -759,7 +759,7 @@ def run_link_prediction_experiments(
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
 
-    if not os.path.isfile(precomputed_data_path):
+    if not (precomputed_data_path and os.path.isfile(precomputed_data_path)):
         train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
             train_sources,
             train_targets,
@@ -830,8 +830,9 @@ def run_link_prediction_experiments(
             'streaming_embeddings': streaming_embeddings
         }
 
-        with open(precomputed_data_path, 'wb') as f:
-            pickle.dump(precomputed_data, f)
+        if precomputed_data_path:
+            with open(precomputed_data_path, 'wb') as f:
+                pickle.dump(precomputed_data, f)
     else:
         with open(precomputed_data_path, 'rb') as f:
             precomputed_data = pickle.load(f)
