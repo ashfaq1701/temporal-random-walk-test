@@ -973,7 +973,7 @@ if __name__ == '__main__':
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
                         help='Number of experimental runs for averaging results')
-    parser.add_argument('--batch_size', type=int, default=1_000_000, help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=10_000_000, help='Batch size for training')
 
     # GPU settings
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
