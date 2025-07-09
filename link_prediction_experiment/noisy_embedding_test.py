@@ -760,6 +760,12 @@ def run_link_prediction_experiments(
     test_targets = test_df['i'].to_numpy()
 
     if not (precomputed_data_path and os.path.isfile(precomputed_data_path)):
+        logger.info("=" * 60)
+        logger.info("Computing data and embeddings ...")
+        if precomputed_data_path:
+            logger.info(f'and saving in {precomputed_data_path}')
+        logger.info("=" * 60)
+
         train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
             train_sources,
             train_targets,
@@ -834,6 +840,10 @@ def run_link_prediction_experiments(
             with open(precomputed_data_path, 'wb') as f:
                 pickle.dump(precomputed_data, f)
     else:
+        logger.info("=" * 60)
+        logger.info(f"Preloading data and embeddings from {precomputed_data_path} ...")
+        logger.info("=" * 60)
+
         with open(precomputed_data_path, 'rb') as f:
             precomputed_data = pickle.load(f)
 
