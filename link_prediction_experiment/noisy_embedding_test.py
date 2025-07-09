@@ -1,4 +1,5 @@
 import argparse
+import os
 import pickle
 import random
 from pathlib import Path
@@ -741,7 +742,8 @@ def run_link_prediction_experiments(
         batch_size,
         num_noise_steps,
         word2vec_n_workers,
-        output_path
+        output_path,
+        precomputed_data_path
 ):
     logger.info("Starting link prediction experiments")
 
@@ -757,54 +759,100 @@ def run_link_prediction_experiments(
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
 
-    train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
-        train_sources,
-        train_targets,
-        train_sources,
-        train_targets,
-        is_directed,
-        negative_edges_per_positive
-    )
+    if not os.path.isfile(precomputed_data_path):
+        train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
+            train_sources,
+            train_targets,
+            train_sources,
+            train_targets,
+            is_directed,
+            negative_edges_per_positive
+        )
 
-    valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
-        val_sources,
-        val_targets,
-        train_sources,
-        train_targets,
-        is_directed,
-        negative_edges_per_positive
-    )
+        valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
+            val_sources,
+            val_targets,
+            train_sources,
+            train_targets,
+            is_directed,
+            negative_edges_per_positive
+        )
 
-    test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
-        test_sources,
-        test_targets,
-        train_sources,
-        train_targets,
-        is_directed,
-        negative_edges_per_positive
-    )
+        test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
+            test_sources,
+            test_targets,
+            train_sources,
+            train_targets,
+            is_directed,
+            negative_edges_per_positive
+        )
+
+        full_embeddings = train_embeddings_full_approach(
+            train_sources=train_sources,
+            train_targets=train_targets,
+            train_timestamps=train_timestamps,
+            is_directed=is_directed,
+            walk_length=walk_length,
+            num_walks_per_node=num_walks_per_node,
+            edge_picker=edge_picker,
+            embedding_dim=embedding_dim,
+            walk_use_gpu=full_embedding_use_gpu,
+            word2vec_n_workers=word2vec_n_workers
+        )
+
+        streaming_embeddings = train_embeddings_streaming_approach(
+            train_sources=train_sources,
+            train_targets=train_targets,
+            train_timestamps=train_timestamps,
+            batch_ts_size=batch_ts_size,
+            sliding_window_duration=sliding_window_duration,
+            weighted_sum_alpha=weighted_sum_alpha,
+            is_directed=is_directed,
+            walk_length=walk_length,
+            num_walks_per_node=num_walks_per_node,
+            edge_picker=edge_picker,
+            embedding_dim=embedding_dim,
+            walk_use_gpu=incremental_embedding_use_gpu,
+            word2vec_n_workers=word2vec_n_workers
+        )
+
+        precomputed_data = {
+            'train_sources_combined': train_sources_combined,
+            'train_targets_combined': train_targets_combined,
+            'train_labels_combined': train_labels_combined,
+            'valid_sources_combined': valid_sources_combined,
+            'valid_targets_combined': valid_targets_combined,
+            'valid_labels_combined': valid_labels_combined,
+            'test_sources_combined': test_sources_combined,
+            'test_targets_combined': test_targets_combined,
+            'test_labels_combined': test_labels_combined,
+            'full_embeddings': full_embeddings,
+            'streaming_embeddings': streaming_embeddings
+        }
+
+        with open(precomputed_data_path, 'wb') as f:
+            pickle.dump(precomputed_data, f)
+    else:
+        with open(precomputed_data_path, 'rb') as f:
+            precomputed_data = pickle.load(f)
+
+        train_sources_combined = precomputed_data['train_sources_combined']
+        train_targets_combined = precomputed_data['train_targets_combined']
+        train_labels_combined = precomputed_data['train_labels_combined']
+        valid_sources_combined = precomputed_data['valid_sources_combined']
+        valid_targets_combined = precomputed_data['valid_targets_combined']
+        valid_labels_combined = precomputed_data['valid_labels_combined']
+        test_sources_combined = precomputed_data['test_sources_combined']
+        test_targets_combined = precomputed_data['test_targets_combined']
+        test_labels_combined = precomputed_data['test_labels_combined']
+        full_embeddings = precomputed_data['full_embeddings']
+        streaming_embeddings = precomputed_data['streaming_embeddings']
 
     noise_stds = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
 
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
     logger.info("=" * 60)
-
-    streaming_embeddings = train_embeddings_streaming_approach(
-        train_sources=train_sources,
-        train_targets=train_targets,
-        train_timestamps=train_timestamps,
-        batch_ts_size=batch_ts_size,
-        sliding_window_duration=sliding_window_duration,
-        weighted_sum_alpha=weighted_sum_alpha,
-        is_directed=is_directed,
-        walk_length=walk_length,
-        num_walks_per_node=num_walks_per_node,
-        edge_picker=edge_picker,
-        embedding_dim=embedding_dim,
-        walk_use_gpu=incremental_embedding_use_gpu,
-        word2vec_n_workers=word2vec_n_workers
-    )
 
     device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
@@ -859,19 +907,6 @@ def run_link_prediction_experiments(
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
     logger.info("=" * 60)
-
-    full_embeddings = train_embeddings_full_approach(
-        train_sources=train_sources,
-        train_targets=train_targets,
-        train_timestamps=train_timestamps,
-        is_directed=is_directed,
-        walk_length=walk_length,
-        num_walks_per_node=num_walks_per_node,
-        edge_picker=edge_picker,
-        embedding_dim=embedding_dim,
-        walk_use_gpu=full_embedding_use_gpu,
-        word2vec_n_workers=word2vec_n_workers
-    )
 
     full_results = {}
 
@@ -988,6 +1023,7 @@ if __name__ == '__main__':
                         help='Number of workers for Word2Vec training')
     parser.add_argument('--output_path', type=str, default=None,
                         help='File path to save results (optional)')
+    parser.add_argument('--precomputed_data_path', type=str, required=False, default=None, help='Precomputed data path')
 
     args = parser.parse_args()
 
@@ -1012,5 +1048,6 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         num_noise_steps=args.num_noise_steps,
         word2vec_n_workers=args.word2vec_n_workers,
-        output_path=args.output_path
+        output_path=args.output_path,
+        precomputed_data_path=args.precomputed_data_path
     )
