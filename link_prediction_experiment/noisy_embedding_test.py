@@ -224,10 +224,6 @@ class EarlyStopping:
         return False
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 class LinkPredictionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor, edge_op: str):
         super().__init__()
