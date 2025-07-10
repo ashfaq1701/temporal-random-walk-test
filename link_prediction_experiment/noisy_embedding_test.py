@@ -316,7 +316,7 @@ def train_link_prediction_model(model,
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=4,
+        num_workers=8,
         persistent_workers=True
     )
 
@@ -325,7 +325,7 @@ def train_link_prediction_model(model,
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=4,
+        num_workers=8,
         persistent_workers=True
     )
 
@@ -439,7 +439,7 @@ def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=4,
+        num_workers=8,
         persistent_workers=True
     )
 
