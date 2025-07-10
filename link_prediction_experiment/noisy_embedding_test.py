@@ -312,25 +312,32 @@ def train_link_prediction_model(model,
     X_targets_val_tensor = torch.tensor(X_targets_val, dtype=torch.long)
     y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
 
+    num_workers = min(8, os.cpu_count())
+
     train_loader = DataLoader(
         TensorDataset(X_sources_train_tensor, X_targets_train_tensor, y_train_tensor),
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=8,
+        num_workers=num_workers,
         persistent_workers=True,
         prefetch_factor=4
     )
 
+    # Use larger batch size for validation to reduce overhead
+    val_batch_size = batch_size * 4
     val_loader = DataLoader(
         TensorDataset(X_sources_val_tensor, X_targets_val_tensor, y_val_tensor),
-        batch_size=batch_size,
+        batch_size=val_batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=4,
+        num_workers=num_workers,
         persistent_workers=True,
-        prefetch_factor=2
+        prefetch_factor=4
     )
+
+    logger.info(f"Training: {len(train_loader)} batches of {batch_size:,}")
+    logger.info(f"Validation: {len(val_loader)} batches of {val_batch_size:,}")
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
@@ -338,9 +345,10 @@ def train_link_prediction_model(model,
     for epoch in epoch_pbar:
         model.train()
         total_train_loss = 0.0
-        all_train_preds, all_train_targets = [], []
+        train_preds_list = []
+        train_targets_list = []
 
-        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} - Train", leave=False, unit="batch")
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} - Train", leave=False, unit="batch")
 
         for batch_sources, batch_targets, batch_y in train_pbar:
             batch_sources = batch_sources.to(device, non_blocking=True)
@@ -363,8 +371,9 @@ def train_link_prediction_model(model,
                 optimizer.step()
 
             total_train_loss += loss.item()
-            all_train_preds.extend(torch.sigmoid(outputs).detach().float().cpu().numpy().flatten())
-            all_train_targets.extend(batch_y.cpu().numpy().flatten())
+
+            train_preds_list.append(torch.sigmoid(outputs).detach().float())
+            train_targets_list.append(batch_y.float())
 
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
@@ -372,9 +381,10 @@ def train_link_prediction_model(model,
 
         model.eval()
         total_val_loss = 0.0
-        all_val_preds, all_val_targets = [], []
+        val_preds_list = []
+        val_targets_list = []
 
-        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} - Val", leave=False, unit="batch")
+        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} - Val", leave=False, unit="batch")
 
         with torch.no_grad():
             for batch_sources, batch_targets, batch_y in val_pbar:
@@ -391,12 +401,19 @@ def train_link_prediction_model(model,
                     loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
-                all_val_preds.extend(torch.sigmoid(outputs).detach().float().cpu().numpy().flatten())
-                all_val_targets.extend(batch_y.cpu().numpy().flatten())
+
+                val_preds_list.append(torch.sigmoid(outputs).detach().float())
+                val_targets_list.append(batch_y.float())
 
                 val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_val_loss = total_val_loss / len(val_loader)
+
+        all_train_preds = torch.cat(train_preds_list, dim=0).cpu().numpy().flatten()
+        all_train_targets = torch.cat(train_targets_list, dim=0).cpu().numpy().flatten()
+
+        all_val_preds = torch.cat(val_preds_list, dim=0).cpu().numpy().flatten()
+        all_val_targets = torch.cat(val_targets_list, dim=0).cpu().numpy().flatten()
 
         train_auc = roc_auc_score(all_train_targets, all_train_preds)
         val_auc = roc_auc_score(all_val_targets, all_val_preds)
@@ -420,6 +437,11 @@ def train_link_prediction_model(model,
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
+        del train_preds_list, train_targets_list, val_preds_list, val_targets_list
+        del all_train_preds, all_train_targets, all_val_preds, all_val_targets
+        if device == 'cuda':
+            torch.cuda.empty_cache()
+
     epoch_pbar.close()
     logger.info("Training completed")
     return history
@@ -436,21 +458,25 @@ def predict_with_model(model,
     use_amp = use_amp and device == 'cuda'
 
     logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
-    predictions = []
 
-    # Ensure inputs are on CPU before DataLoader
     X_sources_tensor = torch.tensor(X_sources_test, dtype=torch.long)
     X_targets_tensor = torch.tensor(X_targets_test, dtype=torch.long)
+
+    num_workers = min(8, os.cpu_count())
 
     test_loader = DataLoader(
         TensorDataset(X_sources_tensor, X_targets_tensor),
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=4,
+        num_workers=num_workers,
         persistent_workers=True,
         prefetch_factor=4
     )
+
+    logger.info(f"Processing {len(test_loader)} batches")
+
+    predictions_list = []
 
     prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
 
@@ -465,17 +491,25 @@ def predict_with_model(model,
             else:
                 logits = model(batch_sources, batch_targets)
 
-            probs = torch.sigmoid(logits).detach().float().cpu().numpy().flatten()
-            predictions.extend(probs)
+            probs = torch.sigmoid(logits).detach().float()
+            predictions_list.append(probs)
 
             prediction_pbar.set_postfix({
-                'samples': f'{len(predictions):,}',
+                'batches_processed': len(predictions_list),
                 'batch_size': len(batch_sources)
             })
 
     prediction_pbar.close()
+
+    logger.info("Transferring predictions to CPU...")
+    all_predictions = torch.cat(predictions_list, dim=0).cpu().numpy().flatten()
+
+    del predictions_list
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+
     logger.info("Prediction completed")
-    return np.array(predictions)
+    return all_predictions
 
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
