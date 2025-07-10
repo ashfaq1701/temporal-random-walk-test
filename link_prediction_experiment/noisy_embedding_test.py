@@ -366,7 +366,6 @@ def train_link_prediction_model(model,
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_train_loss = total_train_loss / len(train_loader)
-        train_auc = roc_auc_score(all_train_targets, all_train_preds)
 
         # === Validation ===
         model.eval()
@@ -396,6 +395,8 @@ def train_link_prediction_model(model,
                 val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_val_loss = total_val_loss / len(val_loader)
+
+        train_auc = roc_auc_score(all_train_targets, all_train_preds)
         val_auc = roc_auc_score(all_val_targets, all_val_preds)
 
         history['train_loss'].append(avg_train_loss)
