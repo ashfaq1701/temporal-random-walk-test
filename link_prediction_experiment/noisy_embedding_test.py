@@ -304,7 +304,6 @@ def train_link_prediction_model(model,
     if use_amp:
         logger.info("Mixed precision training enabled")
 
-    # ✅ Ensure tensors are created on CPU
     X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long, device='cpu')
     X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long, device='cpu')
     y_train_tensor = torch.tensor(y_train, dtype=torch.float32, device='cpu').unsqueeze(1)
