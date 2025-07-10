@@ -363,7 +363,7 @@ def train_link_prediction_model(model,
                 optimizer.step()
 
             total_train_loss += loss.item()
-            all_train_preds.extend(torch.sigmoid(outputs).float().cpu().numpy().flatten())
+            all_train_preds.extend(torch.sigmoid(outputs).detach().float().cpu().numpy().flatten())
             all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
@@ -391,7 +391,7 @@ def train_link_prediction_model(model,
                     loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
-                all_val_preds.extend(torch.sigmoid(outputs).float().cpu().numpy().flatten())
+                all_val_preds.extend(torch.sigmoid(outputs).detach().float().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
                 val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
@@ -465,7 +465,7 @@ def predict_with_model(model,
             else:
                 logits = model(batch_sources, batch_targets)
 
-            probs = torch.sigmoid(logits).float().cpu().numpy().flatten()
+            probs = torch.sigmoid(logits).detach().float().cpu().numpy().flatten()
             predictions.extend(probs)
 
             prediction_pbar.set_postfix({
