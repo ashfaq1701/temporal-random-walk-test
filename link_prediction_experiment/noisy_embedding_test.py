@@ -292,8 +292,9 @@ def train_link_prediction_model(model,
                                 use_amp=True):
     logger.info(f"Training neural network on {len(X_sources_train):,} samples with batch size {batch_size:,}")
 
-    use_amp = use_amp and device == 'cuda'
+    # Move model to device
     model = model.to(device)
+    use_amp = use_amp and device == 'cuda'
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
@@ -303,13 +304,13 @@ def train_link_prediction_model(model,
     if use_amp:
         logger.info("Mixed precision training enabled")
 
-    X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long, device='cpu')
-    X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long, device='cpu')
-    y_train_tensor = torch.tensor(y_train, dtype=torch.float32, device='cpu').unsqueeze(1)
+    X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long)
+    X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
 
-    X_sources_val_tensor = torch.tensor(X_sources_val, dtype=torch.long, device='cpu')
-    X_targets_val_tensor = torch.tensor(X_targets_val, dtype=torch.long, device='cpu')
-    y_val_tensor = torch.tensor(y_val, dtype=torch.float32, device='cpu').unsqueeze(1)
+    X_sources_val_tensor = torch.tensor(X_sources_val, dtype=torch.long)
+    X_targets_val_tensor = torch.tensor(X_targets_val, dtype=torch.long)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
 
     train_loader = DataLoader(
         TensorDataset(X_sources_train_tensor, X_targets_train_tensor, y_train_tensor),
@@ -317,7 +318,8 @@ def train_link_prediction_model(model,
         shuffle=False,
         pin_memory=(device == 'cuda'),
         num_workers=8,
-        persistent_workers=True
+        persistent_workers=True,
+        prefetch_factor=4
     )
 
     val_loader = DataLoader(
@@ -325,12 +327,12 @@ def train_link_prediction_model(model,
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=8,
-        persistent_workers=True
+        num_workers=4,
+        persistent_workers=True,
+        prefetch_factor=2
     )
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
-
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
 
     for epoch in epoch_pbar:
@@ -346,8 +348,9 @@ def train_link_prediction_model(model,
             batch_y = batch_y.to(device, non_blocking=True)
 
             optimizer.zero_grad()
+
             if use_amp:
-                with autocast(device_type=device):
+                with autocast(device_type='cuda', dtype=torch.float16):
                     outputs = model(batch_sources, batch_targets)
                     loss = criterion(outputs, batch_y)
                 scaler.scale(loss).backward()
@@ -360,14 +363,13 @@ def train_link_prediction_model(model,
                 optimizer.step()
 
             total_train_loss += loss.item()
-            all_train_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
+            all_train_preds.extend(torch.sigmoid(outputs).float().cpu().numpy().flatten())
             all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_train_loss = total_train_loss / len(train_loader)
 
-        # === Validation ===
         model.eval()
         total_val_loss = 0.0
         all_val_preds, all_val_targets = [], []
@@ -381,7 +383,7 @@ def train_link_prediction_model(model,
                 batch_y = batch_y.to(device, non_blocking=True)
 
                 if use_amp:
-                    with autocast(device_type=device):
+                    with autocast(device_type='cuda', dtype=torch.float16):
                         outputs = model(batch_sources, batch_targets)
                         loss = criterion(outputs, batch_y)
                 else:
@@ -389,7 +391,7 @@ def train_link_prediction_model(model,
                     loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
-                all_val_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
+                all_val_preds.extend(torch.sigmoid(outputs).float().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
                 val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
@@ -423,25 +425,31 @@ def train_link_prediction_model(model,
     return history
 
 
-def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device='cpu', use_amp=True):
+def predict_with_model(model,
+                       X_sources_test,
+                       X_targets_test,
+                       batch_size,
+                       device='cpu',
+                       use_amp=True):
     model = model.to(device)
     model.eval()
+    use_amp = use_amp and device == 'cuda'
+
+    logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
     predictions = []
 
-    use_amp = use_amp and device == 'cuda'
-    logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
-
-    # Ensure tensors are created on CPU before being moved in batches
-    X_sources_tensor = torch.tensor(X_sources_test, dtype=torch.long, device='cpu')
-    X_targets_tensor = torch.tensor(X_targets_test, dtype=torch.long, device='cpu')
+    # Ensure inputs are on CPU before DataLoader
+    X_sources_tensor = torch.tensor(X_sources_test, dtype=torch.long)
+    X_targets_tensor = torch.tensor(X_targets_test, dtype=torch.long)
 
     test_loader = DataLoader(
         TensorDataset(X_sources_tensor, X_targets_tensor),
         batch_size=batch_size,
         shuffle=False,
         pin_memory=(device == 'cuda'),
-        num_workers=8,
-        persistent_workers=True
+        num_workers=4,
+        persistent_workers=True,
+        prefetch_factor=4
     )
 
     prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
@@ -452,12 +460,12 @@ def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device
             batch_targets = batch_targets.to(device, non_blocking=True)
 
             if use_amp:
-                with autocast():
+                with autocast(device_type='cuda', dtype=torch.float16):
                     logits = model(batch_sources, batch_targets)
             else:
                 logits = model(batch_sources, batch_targets)
 
-            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+            probs = torch.sigmoid(logits).float().cpu().numpy().flatten()
             predictions.extend(probs)
 
             prediction_pbar.set_postfix({
