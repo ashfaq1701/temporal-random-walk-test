@@ -1,27 +1,22 @@
 import argparse
+import logging
 import os
 import pickle
 import random
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict
-from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
-import logging
-import warnings
-from contextlib import contextmanager
-
-from temporal_random_walk import TemporalRandomWalk
+import torch.optim as optim
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
-
-import torch.nn.functional as F
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.amp import GradScaler
+from temporal_random_walk import TemporalRandomWalk
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -229,15 +224,19 @@ class EarlyStopping:
         return False
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 class LinkPredictionModel(nn.Module):
-    def __init__(self, node_embeddings_tensor, edge_op):
+    def __init__(self, node_embeddings_tensor: torch.Tensor, edge_op: str):
         super().__init__()
 
         self.edge_op = edge_op
-        self.register_buffer('node_embeddings', node_embeddings_tensor.clone())
+
+        self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
 
         input_dim = node_embeddings_tensor.shape[1]
-
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
 
@@ -253,8 +252,12 @@ class LinkPredictionModel(nn.Module):
         self.fc_out = nn.Linear(16, 1)
 
     def forward(self, upstream_nodes, downstream_nodes):
-        upstream_emb = self.node_embeddings[upstream_nodes]
-        downstream_emb = self.node_embeddings[downstream_nodes]
+        device = next(self.parameters()).device
+        upstream_nodes = upstream_nodes.to(device)
+        downstream_nodes = downstream_nodes.to(device)
+
+        upstream_emb = self.embedding_lookup(upstream_nodes)
+        downstream_emb = self.embedding_lookup(downstream_nodes)
 
         if self.edge_op == 'average':
             edge_features = (upstream_emb + downstream_emb) / 2
@@ -267,27 +270,32 @@ class LinkPredictionModel(nn.Module):
         else:
             raise ValueError(f"Unknown edge_op: {self.edge_op}")
 
-        x1 = F.relu(self.fc1(edge_features))
-        x1 = self.dropout1(x1)
+        x = F.relu(self.fc1(edge_features))
+        x = self.dropout1(x)
 
-        x2 = F.relu(self.fc2(x1))
-        x2 = self.dropout2(x2)
+        x = F.relu(self.fc2(x))
+        x = self.dropout2(x)
 
-        x3 = F.relu(self.fc3(x2))
-        x3 = self.dropout3(x3)
+        x = F.relu(self.fc3(x))
+        x = self.dropout3(x)
 
-        out = self.fc_out(x3)
-        return out
+        return self.fc_out(x)
 
 
 def train_link_prediction_model(model,
                                 X_sources_train, X_targets_train, y_train,
                                 X_sources_val, X_targets_val, y_val,
-                                batch_size, learning_rate=0.001,
-                                epochs=20, device='cpu', patience=5, use_amp=True):
+                                batch_size,
+                                learning_rate=0.001,
+                                epochs=20,
+                                device='cpu',
+                                patience=5,
+                                use_amp=True):
     logger.info(f"Training neural network on {len(X_sources_train):,} samples with batch size {batch_size:,}")
 
     use_amp = use_amp and device == 'cuda'
+    model = model.to(device)
+
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     early_stopping = EarlyStopping(mode='max', patience=patience)
@@ -296,24 +304,35 @@ def train_link_prediction_model(model,
     if use_amp:
         logger.info("Mixed precision training enabled")
 
-    # Convert to tensors
-    X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long)
-    X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
+    # ✅ Ensure tensors are created on CPU
+    X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long, device='cpu')
+    X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long, device='cpu')
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32, device='cpu').unsqueeze(1)
 
-    X_sources_val_tensor = torch.tensor(X_sources_val, dtype=torch.long)
-    X_targets_val_tensor = torch.tensor(X_targets_val, dtype=torch.long)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
+    X_sources_val_tensor = torch.tensor(X_sources_val, dtype=torch.long, device='cpu')
+    X_targets_val_tensor = torch.tensor(X_targets_val, dtype=torch.long, device='cpu')
+    y_val_tensor = torch.tensor(y_val, dtype=torch.float32, device='cpu').unsqueeze(1)
 
-    # Dataloaders
-    train_loader = DataLoader(TensorDataset(X_sources_train_tensor, X_targets_train_tensor, y_train_tensor),
-                              batch_size=batch_size, shuffle=True, pin_memory=(device == 'cuda'))
-    val_loader = DataLoader(TensorDataset(X_sources_val_tensor, X_targets_val_tensor, y_val_tensor),
-                            batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
+    train_loader = DataLoader(
+        TensorDataset(X_sources_train_tensor, X_targets_train_tensor, y_train_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=(device == 'cuda'),
+        num_workers=4,
+        persistent_workers=True
+    )
+
+    val_loader = DataLoader(
+        TensorDataset(X_sources_val_tensor, X_targets_val_tensor, y_val_tensor),
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=(device == 'cuda'),
+        num_workers=4,
+        persistent_workers=True
+    )
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
 
-    # Main epoch progress bar
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
 
     for epoch in epoch_pbar:
@@ -321,9 +340,7 @@ def train_link_prediction_model(model,
         total_train_loss = 0.0
         all_train_preds, all_train_targets = [], []
 
-        # Training progress bar
-        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} - Train",
-                         leave=False, unit="batch")
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} - Train", leave=False, unit="batch")
 
         for batch_sources, batch_targets, batch_y in train_pbar:
             batch_sources = batch_sources.to(device, non_blocking=True)
@@ -332,7 +349,7 @@ def train_link_prediction_model(model,
 
             optimizer.zero_grad()
             if use_amp:
-                with torch.amp.autocast('cuda'):
+                with autocast(device_type=device):
                     outputs = model(batch_sources, batch_targets)
                     loss = criterion(outputs, batch_y)
                 scaler.scale(loss).backward()
@@ -348,24 +365,17 @@ def train_link_prediction_model(model,
             all_train_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
             all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
-            # Update progress bar with current loss
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-
-            del batch_sources, batch_targets, batch_y, outputs, loss
-            if device == 'cuda':
-                torch.cuda.empty_cache()
 
         avg_train_loss = total_train_loss / len(train_loader)
         train_auc = roc_auc_score(all_train_targets, all_train_preds) if len(set(all_train_targets)) > 1 else 0.0
 
-        # Validation
+        # === Validation ===
         model.eval()
         total_val_loss = 0.0
         all_val_preds, all_val_targets = [], []
 
-        # Validation progress bar
-        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} - Val",
-                       leave=False, unit="batch")
+        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} - Val", leave=False, unit="batch")
 
         with torch.no_grad():
             for batch_sources, batch_targets, batch_y in val_pbar:
@@ -374,7 +384,7 @@ def train_link_prediction_model(model,
                 batch_y = batch_y.to(device, non_blocking=True)
 
                 if use_amp:
-                    with torch.amp.autocast('cuda'):
+                    with autocast(device_type=device):
                         outputs = model(batch_sources, batch_targets)
                         loss = criterion(outputs, batch_y)
                 else:
@@ -385,12 +395,7 @@ def train_link_prediction_model(model,
                 all_val_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
-                # Update progress bar with current loss
                 val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-
-                del batch_sources, batch_targets, batch_y, outputs, loss
-                if device == 'cuda':
-                    torch.cuda.empty_cache()
 
         avg_val_loss = total_val_loss / len(val_loader)
         val_auc = roc_auc_score(all_val_targets, all_val_preds) if len(set(all_val_targets)) > 1 else 0.0
@@ -400,7 +405,6 @@ def train_link_prediction_model(model,
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
 
-        # Update epoch progress bar with metrics
         epoch_pbar.set_postfix({
             'train_loss': f'{avg_train_loss:.4f}',
             'val_loss': f'{avg_val_loss:.4f}',
@@ -408,8 +412,8 @@ def train_link_prediction_model(model,
             'val_auc': f'{val_auc:.4f}'
         })
 
-        logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
-                    f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
+        logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, "
+                    f"Val Loss: {avg_val_loss:.4f}, Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
         if early_stopping(val_auc, model):
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
@@ -421,19 +425,26 @@ def train_link_prediction_model(model,
 
 
 def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device='cpu', use_amp=True):
-    """Make predictions using a trained binary classification model."""
+    model = model.to(device)
     model.eval()
     predictions = []
-    use_amp = use_amp and device == 'cuda'
 
+    use_amp = use_amp and device == 'cuda'
     logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
 
-    X_sources_tensor = torch.tensor(X_sources_test, dtype=torch.long)
-    X_targets_tensor = torch.tensor(X_targets_test, dtype=torch.long)
-    test_loader = DataLoader(TensorDataset(X_sources_tensor, X_targets_tensor),
-                             batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
+    # Ensure tensors are created on CPU before being moved in batches
+    X_sources_tensor = torch.tensor(X_sources_test, dtype=torch.long, device='cpu')
+    X_targets_tensor = torch.tensor(X_targets_test, dtype=torch.long, device='cpu')
 
-    # Progress bar for prediction batches
+    test_loader = DataLoader(
+        TensorDataset(X_sources_tensor, X_targets_tensor),
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=(device == 'cuda'),
+        num_workers=4,
+        persistent_workers=True
+    )
+
     prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
 
     with torch.no_grad():
@@ -442,23 +453,18 @@ def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device
             batch_targets = batch_targets.to(device, non_blocking=True)
 
             if use_amp:
-                with torch.amp.autocast('cuda'):
+                with autocast():
                     logits = model(batch_sources, batch_targets)
             else:
                 logits = model(batch_sources, batch_targets)
 
-            probs = torch.sigmoid(logits).detach().cpu().numpy().flatten()
+            probs = torch.sigmoid(logits).cpu().numpy().flatten()
             predictions.extend(probs)
 
-            # Update progress bar with current batch info
             prediction_pbar.set_postfix({
                 'samples': f'{len(predictions):,}',
                 'batch_size': len(batch_sources)
             })
-
-            del batch_sources, batch_targets, logits
-            if device == 'cuda':
-                torch.cuda.empty_cache()
 
     prediction_pbar.close()
     logger.info("Prediction completed")
@@ -657,20 +663,19 @@ def train_embeddings_streaming_approach(train_sources, train_targets, train_time
     return global_embeddings
 
 
-def get_embedding_tensor(embedding_dict, device):
-    if embedding_dict is None:
-        raise ValueError("Node embeddings dictionary is empty")
+def get_embedding_tensor(embedding_dict):
+    if embedding_dict is None or not embedding_dict:
+        raise ValueError("Embedding dictionary is empty")
 
     max_node_id = max(embedding_dict.keys())
     embedding_dim = len(next(iter(embedding_dict.values())))
-    tensor_size = max_node_id + 1
 
-    embedding_tensor = torch.full((tensor_size, embedding_dim), 0.0,
-                                  dtype=torch.float32, device=device)
+    embedding_matrix = [torch.zeros(embedding_dim)] * (max_node_id + 1)
 
     for node_id, embedding in embedding_dict.items():
-        embedding_tensor[node_id] = torch.tensor(embedding, dtype=torch.float32, device=device)
+        embedding_matrix[node_id] = torch.tensor(embedding, dtype=torch.float32)
 
+    embedding_tensor = torch.stack(embedding_matrix)
     return embedding_tensor
 
 
