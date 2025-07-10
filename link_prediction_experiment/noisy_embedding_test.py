@@ -314,7 +314,7 @@ def train_link_prediction_model(model,
     train_loader = DataLoader(
         TensorDataset(X_sources_train_tensor, X_targets_train_tensor, y_train_tensor),
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         pin_memory=(device == 'cuda'),
         num_workers=4,
         persistent_workers=True
@@ -366,7 +366,7 @@ def train_link_prediction_model(model,
             train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_train_loss = total_train_loss / len(train_loader)
-        train_auc = roc_auc_score(all_train_targets, all_train_preds) if len(set(all_train_targets)) > 1 else 0.0
+        train_auc = roc_auc_score(all_train_targets, all_train_preds)
 
         # === Validation ===
         model.eval()
@@ -396,7 +396,7 @@ def train_link_prediction_model(model,
                 val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
 
         avg_val_loss = total_val_loss / len(val_loader)
-        val_auc = roc_auc_score(all_val_targets, all_val_preds) if len(set(all_val_targets)) > 1 else 0.0
+        val_auc = roc_auc_score(all_val_targets, all_val_preds)
 
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
