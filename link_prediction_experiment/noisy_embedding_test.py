@@ -4,6 +4,7 @@ import pickle
 import random
 from pathlib import Path
 from typing import Dict
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -228,26 +229,28 @@ class EarlyStopping:
         return False
 
 
-
 class LinkPredictionModel(nn.Module):
-    def __init__(self, node_embeddings_tensor, edge_op, hidden_dims=(256, 128, 64), dropout=0.2):
+    def __init__(self, node_embeddings_tensor, edge_op):
         super().__init__()
 
         self.edge_op = edge_op
         self.register_buffer('node_embeddings', node_embeddings_tensor.clone())
 
-        h1, h2, h3 = hidden_dims
         input_dim = node_embeddings_tensor.shape[1]
 
-        self.fc1 = nn.Linear(input_dim, h1)
-        self.fc2 = nn.Linear(h1, h2)
-        self.fc3 = nn.Linear(h2, h3)
-        self.fc_out = nn.Linear(h3, 1)
+        hidden_dim1 = max(64, input_dim // 2)
+        hidden_dim2 = max(32, input_dim // 4)
 
-        self.proj1 = nn.Linear(input_dim, h2) if input_dim != h2 else nn.Identity()
-        self.proj2 = nn.Linear(h1, h3) if h1 != h3 else nn.Identity()
+        self.fc1 = nn.Linear(input_dim, hidden_dim1)
+        self.dropout1 = nn.Dropout(0.2)
 
-        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_dim1, hidden_dim2)
+        self.dropout2 = nn.Dropout(0.2)
+
+        self.fc3 = nn.Linear(hidden_dim2, 16)
+        self.dropout3 = nn.Dropout(0.1)
+
+        self.fc_out = nn.Linear(16, 1)
 
     def forward(self, upstream_nodes, downstream_nodes):
         upstream_emb = self.node_embeddings[upstream_nodes]
@@ -265,21 +268,15 @@ class LinkPredictionModel(nn.Module):
             raise ValueError(f"Unknown edge_op: {self.edge_op}")
 
         x1 = F.relu(self.fc1(edge_features))
-        x1 = self.dropout(x1)
+        x1 = self.dropout1(x1)
 
         x2 = F.relu(self.fc2(x1))
-        x2 = self.dropout(x2)
+        x2 = self.dropout2(x2)
 
-        # Residual connection from input → x2
-        x2_res = x2 + self.proj1(edge_features)  # (input_dim → h2)
+        x3 = F.relu(self.fc3(x2))
+        x3 = self.dropout3(x3)
 
-        x3 = F.relu(self.fc3(x2_res))
-        x3 = self.dropout(x3)
-
-        # Residual connection from x1 → x3
-        x3_res = x3 + self.proj2(x1)  # (h1 → h3)
-
-        out = self.fc_out(x3_res)
+        out = self.fc_out(x3)
         return out
 
 
@@ -316,12 +313,19 @@ def train_link_prediction_model(model,
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
 
-    for epoch in range(epochs):
+    # Main epoch progress bar
+    epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
+
+    for epoch in epoch_pbar:
         model.train()
         total_train_loss = 0.0
         all_train_preds, all_train_targets = [], []
 
-        for batch_sources, batch_targets, batch_y in train_loader:
+        # Training progress bar
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} - Train",
+                         leave=False, unit="batch")
+
+        for batch_sources, batch_targets, batch_y in train_pbar:
             batch_sources = batch_sources.to(device, non_blocking=True)
             batch_targets = batch_targets.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
@@ -344,6 +348,9 @@ def train_link_prediction_model(model,
             all_train_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
             all_train_targets.extend(batch_y.cpu().numpy().flatten())
 
+            # Update progress bar with current loss
+            train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+
             del batch_sources, batch_targets, batch_y, outputs, loss
             if device == 'cuda':
                 torch.cuda.empty_cache()
@@ -356,8 +363,12 @@ def train_link_prediction_model(model,
         total_val_loss = 0.0
         all_val_preds, all_val_targets = [], []
 
+        # Validation progress bar
+        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} - Val",
+                       leave=False, unit="batch")
+
         with torch.no_grad():
-            for batch_sources, batch_targets, batch_y in val_loader:
+            for batch_sources, batch_targets, batch_y in val_pbar:
                 batch_sources = batch_sources.to(device, non_blocking=True)
                 batch_targets = batch_targets.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
@@ -374,6 +385,9 @@ def train_link_prediction_model(model,
                 all_val_preds.extend(torch.sigmoid(outputs).detach().cpu().numpy().flatten())
                 all_val_targets.extend(batch_y.cpu().numpy().flatten())
 
+                # Update progress bar with current loss
+                val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+
                 del batch_sources, batch_targets, batch_y, outputs, loss
                 if device == 'cuda':
                     torch.cuda.empty_cache()
@@ -386,6 +400,14 @@ def train_link_prediction_model(model,
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
 
+        # Update epoch progress bar with metrics
+        epoch_pbar.set_postfix({
+            'train_loss': f'{avg_train_loss:.4f}',
+            'val_loss': f'{avg_val_loss:.4f}',
+            'train_auc': f'{train_auc:.4f}',
+            'val_auc': f'{val_auc:.4f}'
+        })
+
         logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
                     f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
@@ -393,6 +415,7 @@ def train_link_prediction_model(model,
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
+    epoch_pbar.close()
     logger.info("Training completed")
     return history
 
@@ -410,8 +433,11 @@ def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device
     test_loader = DataLoader(TensorDataset(X_sources_tensor, X_targets_tensor),
                              batch_size=batch_size, shuffle=False, pin_memory=(device == 'cuda'))
 
+    # Progress bar for prediction batches
+    prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
+
     with torch.no_grad():
-        for batch_sources, batch_targets in test_loader:
+        for batch_sources, batch_targets in prediction_pbar:
             batch_sources = batch_sources.to(device, non_blocking=True)
             batch_targets = batch_targets.to(device, non_blocking=True)
 
@@ -424,10 +450,17 @@ def predict_with_model(model, X_sources_test, X_targets_test, batch_size, device
             probs = torch.sigmoid(logits).detach().cpu().numpy().flatten()
             predictions.extend(probs)
 
+            # Update progress bar with current batch info
+            prediction_pbar.set_postfix({
+                'samples': f'{len(predictions):,}',
+                'batch_size': len(batch_sources)
+            })
+
             del batch_sources, batch_targets, logits
             if device == 'cuda':
                 torch.cuda.empty_cache()
 
+    prediction_pbar.close()
     logger.info("Prediction completed")
     return np.array(predictions)
 
