@@ -37,7 +37,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_file_path', type=str, required=True,
                         help='Path to data file (parquet or csv format)')
 
-    parser.add_argument('--num_negatives_per_positive', type=str, required=True)
+    parser.add_argument('--num_negatives_per_positive', type=int, required=True)
 
     parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True,
                         help='Whether the graph is directed (true/false)')
