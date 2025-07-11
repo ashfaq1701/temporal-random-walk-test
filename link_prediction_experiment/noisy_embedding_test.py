@@ -704,20 +704,17 @@ def train_embeddings_streaming_approach(train_sources, train_targets, train_time
     return global_embeddings
 
 
-def get_embedding_tensor(embedding_dict):
-    if embedding_dict is None or not embedding_dict:
-        raise ValueError("Embedding dictionary is empty")
-
-    max_node_id = max(embedding_dict.keys())
+def get_embedding_tensor(embedding_dict, max_node_id):
     embedding_dim = len(next(iter(embedding_dict.values())))
+    embedding_matrix = torch.zeros((max_node_id + 1, embedding_dim), dtype=torch.float32)
 
-    embedding_matrix = [torch.zeros(embedding_dim)] * (max_node_id + 1)
-
+    nodes_filled = 0
     for node_id, embedding in embedding_dict.items():
-        embedding_matrix[node_id] = torch.tensor(embedding, dtype=torch.float32)
+        if node_id <= max_node_id:
+            embedding_matrix[node_id] = torch.tensor(embedding, dtype=torch.float32)
+            nodes_filled += 1
 
-    embedding_tensor = torch.stack(embedding_matrix)
-    return embedding_tensor
+    return embedding_matrix
 
 
 def compute_mrr(pred_proba, labels, negative_edges_per_positive):
@@ -837,6 +834,15 @@ def run_link_prediction_experiments(
 
     test_sources = test_df['u'].to_numpy()
     test_targets = test_df['i'].to_numpy()
+
+    all_node_ids = np.concatenate([
+        train_sources, train_targets,
+        val_sources, val_targets,
+        test_sources, test_targets
+    ])
+
+    max_node_id = int(all_node_ids.max())
+    logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
     if not (precomputed_data_path and os.path.isfile(precomputed_data_path)):
         logger.info("=" * 60)
@@ -964,7 +970,7 @@ def run_link_prediction_experiments(
                 test_sources=test_sources_combined,
                 test_targets=test_targets_combined,
                 test_labels=test_labels_combined,
-                embedding_tensor=get_embedding_tensor(noisy_embeddings),
+                embedding_tensor=get_embedding_tensor(noisy_embeddings, max_node_id),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 n_epochs=n_epochs,
@@ -1016,7 +1022,7 @@ def run_link_prediction_experiments(
                 test_sources=test_sources_combined,
                 test_targets=test_targets_combined,
                 test_labels=test_labels_combined,
-                embedding_tensor=get_embedding_tensor(noisy_embeddings),
+                embedding_tensor=get_embedding_tensor(noisy_embeddings, max_node_id),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 n_epochs=n_epochs,
