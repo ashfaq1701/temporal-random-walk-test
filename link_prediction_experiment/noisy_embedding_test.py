@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 import pickle
-import random
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,7 +19,6 @@ from temporal_random_walk import TemporalRandomWalk
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -740,14 +738,12 @@ def evaluate_link_prediction(
     return results
 
 
-def add_gaussian_noise(embeddings: Dict[int, np.ndarray], noise_std: float) -> Dict[int, np.ndarray]:
-    if noise_std == 0.0:
-        return embeddings.copy()
-
+def add_gaussian_noise(embeddings: Dict[int, np.ndarray], alpha) -> Dict[int, np.ndarray]:
     noisy_embeddings = {}
     for node_id, embedding in embeddings.items():
-        noise = np.random.normal(1.0, noise_std, embedding.shape)
-        noisy_embeddings[node_id] = embedding * noise
+        noise = np.random.normal(loc=0.0, scale=1.0, size=embedding.shape)
+        blended = (1 - alpha) * embedding + alpha * noise
+        noisy_embeddings[node_id] = blended
 
     return noisy_embeddings
 
@@ -920,7 +916,7 @@ def run_link_prediction_experiments(
         full_embeddings = precomputed_data['full_embeddings']
         streaming_embeddings = precomputed_data['streaming_embeddings']
 
-    noise_stds = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
+    noise_alphas = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
 
     logger.info("=" * 60)
     logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
@@ -930,11 +926,11 @@ def run_link_prediction_experiments(
 
     streaming_results = {}
 
-    for noise_std in noise_stds:
+    for noise_alpha in noise_alphas:
         for run in range(n_runs):
-            logger.info(f"\n--- Noise Std: {noise_std}, Run {run + 1}/{n_runs} ---")
+            logger.info(f"\n--- Noise alpha: {noise_alpha}, Run {run + 1}/{n_runs} ---")
 
-            noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_std)
+            noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_alpha)
 
             current_streaming_results = evaluate_link_prediction(
                 train_sources=train_sources_combined,
@@ -955,23 +951,23 @@ def run_link_prediction_experiments(
             )
 
             for key in current_streaming_results.keys():
-                if noise_std not in streaming_results:
-                    streaming_results[noise_std] = {}
+                if noise_alpha not in streaming_results:
+                    streaming_results[noise_alpha] = {}
 
-                if key not in streaming_results[noise_std]:
-                    streaming_results[noise_std][key] = []
+                if key not in streaming_results[noise_alpha]:
+                    streaming_results[noise_alpha][key] = []
 
-                streaming_results[noise_std][key].append(current_streaming_results[key])
+                streaming_results[noise_alpha][key].append(current_streaming_results[key])
 
     logger.info(f"\nStreaming Approach Results Across Noise Levels:")
     logger.info("=" * 80)
 
-    for noise_std in noise_stds:
-        if noise_std in streaming_results:
-            logger.info(f"\nNoise Level {noise_std:.3f}:")
+    for noise_alpha in noise_alphas:
+        if noise_alpha in streaming_results:
+            logger.info(f"\nNoise Level {noise_alpha:.3f}:")
             for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
-                if metric in streaming_results[noise_std]:
-                    values = streaming_results[noise_std][metric]
+                if metric in streaming_results[noise_alpha]:
+                    values = streaming_results[noise_alpha][metric]
                     mean_val = np.mean(values)
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
@@ -982,11 +978,11 @@ def run_link_prediction_experiments(
 
     full_results = {}
 
-    for noise_std in noise_stds:
+    for noise_alpha in noise_alphas:
         for run in range(n_runs):
-            logger.info(f"\n--- Noise Std: {noise_std}, Run {run + 1}/{n_runs} ---")
+            logger.info(f"\n--- Noise alpha: {noise_alpha}, Run {run + 1}/{n_runs} ---")
 
-            noisy_embeddings = add_gaussian_noise(full_embeddings, noise_std)
+            noisy_embeddings = add_gaussian_noise(full_embeddings, noise_alpha)
 
             current_full_results = evaluate_link_prediction(
                 train_sources=train_sources_combined,
@@ -1007,23 +1003,23 @@ def run_link_prediction_experiments(
             )
 
             for key in current_full_results.keys():
-                if noise_std not in full_results:
-                    full_results[noise_std] = {}
+                if noise_alpha not in full_results:
+                    full_results[noise_alpha] = {}
 
-                if key not in full_results[noise_std]:
-                    full_results[noise_std][key] = []
+                if key not in full_results[noise_alpha]:
+                    full_results[noise_alpha][key] = []
 
-                full_results[noise_std][key].append(current_full_results[key])
+                full_results[noise_alpha][key].append(current_full_results[key])
 
     logger.info(f"\nFull Approach Results Across Noise Levels:")
     logger.info("=" * 80)
 
-    for noise_std in noise_stds:
-        if noise_std in full_results:
-            logger.info(f"\nNoise Level {noise_std:.3f}:")
+    for noise_alpha in noise_alphas:
+        if noise_alpha in full_results:
+            logger.info(f"\nNoise Level {noise_alpha:.3f}:")
             for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
-                if metric in full_results[noise_std]:
-                    values = full_results[noise_std][metric]
+                if metric in full_results[noise_alpha]:
+                    values = full_results[noise_alpha][metric]
                     mean_val = np.mean(values)
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
