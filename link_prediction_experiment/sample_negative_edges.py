@@ -8,8 +8,13 @@ from temporal_negative_edge_sampler import collect_all_negatives_by_timestamp
 def sample_negative_edges(data_file_path, num_negatives_per_positive, is_directed, output_file_path):
     if data_file_path.endswith('.parquet'):
         df = pd.read_parquet(data_file_path)
+    elif data_file_path.endswith('.pkl'):
+        with open(data_file_path, 'rb') as f:
+            df = pickle.load(f)
     else:
         df = pd.read_csv(data_file_path)
+
+    df = df[['u', 'i', 'ts']]
 
     sources = df['u'].to_numpy()
     targets = df['i'].to_numpy()

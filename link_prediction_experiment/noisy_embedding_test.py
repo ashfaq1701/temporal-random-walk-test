@@ -64,8 +64,13 @@ def split_dataset(data_file_path):
 
     if data_file_path.endswith('.parquet'):
         df = pd.read_parquet(data_file_path)
+    elif data_file_path.endswith('.pkl'):
+        with open(data_file_path, 'rb') as f:
+            df = pickle.load(f)
     else:
         df = pd.read_csv(data_file_path)
+
+    df = df[['u', 'i', 'ts']]
 
     # Sort by timestamp to ensure chronological order
     df = df.sort_values('ts').reset_index(drop=True)
