@@ -46,5 +46,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-
-
+    sample_negative_edges(args.data_file_path, args.num_negatives_per_positive, args.is_directed, args.output_file_path)
