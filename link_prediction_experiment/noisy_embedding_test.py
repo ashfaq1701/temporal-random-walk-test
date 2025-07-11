@@ -101,60 +101,14 @@ def split_dataset(data_file_path):
     return train_df, valid_df, test_df
 
 
-def create_dataset_with_negative_edges(ds_sources, ds_targets,
-                                       sources_to_exclude, targets_to_exclude,
-                                       is_directed, k, random_state=42):
+def combine_negative_with_positive_edges(ds_sources, ds_targets, neg_sources, neg_targets, k, random_state=42):
     np.random.seed(random_state)
-    random.seed(random_state)
 
     num_positive = len(ds_sources)
-    num_negative = int(num_positive * k)
-    logger.info(f"Creating dataset with {num_positive:,} positive edges and {num_negative:,} negatives")
+    expected_neg_size = num_positive * k
 
-    # Get all unique nodes
-    all_nodes = list(set(ds_sources).union(ds_targets, sources_to_exclude, targets_to_exclude))
-
-    # Create set of edges to exclude
-    edges_to_exclude = set(zip(sources_to_exclude, targets_to_exclude))
-    if not is_directed:
-        edges_to_exclude |= set(zip(targets_to_exclude, sources_to_exclude))  # Add reverse direction
-
-    logger.info(f"Sampling negatives from {len(all_nodes):,} nodes")
-    logger.info(f"Total excluded edge pairs: {len(edges_to_exclude):,}")
-
-    # Generate negative edges
-    batch_size = 10_000_000
-    negative_edges = []
-    attempts = 0
-
-    while len(negative_edges) < num_negative:
-        attempts += 1
-        remaining = num_negative - len(negative_edges)
-        current_batch = min(batch_size, remaining * 5)
-
-        u = np.random.choice(all_nodes, current_batch, replace=True)
-        v = np.random.choice(all_nodes, current_batch, replace=True)
-
-        mask = u != v
-        u_valid, v_valid = u[mask], v[mask]
-        candidate_pairs = set(zip(u_valid, v_valid))
-
-        new_negatives = list(candidate_pairs - edges_to_exclude)
-
-        needed = num_negative - len(negative_edges)
-        negative_edges.extend(new_negatives[:needed])
-
-        logger.info(f"Attempt {attempts}: Collected {len(negative_edges):,}/{num_negative:,} negatives")
-
-    if len(negative_edges) < num_negative:
-        logger.warning("Not enough valid negatives found. Returning fewer samples.")
-
-    # Final trim
-    neg_sources, neg_targets = zip(*negative_edges)
-    neg_sources = np.array(neg_sources, dtype=np.int32)[:num_negative]
-    neg_targets = np.array(neg_targets, dtype=np.int32)[:num_negative]
-    ds_sources = np.array(ds_sources)
-    ds_targets = np.array(ds_targets)
+    assert len(neg_sources) == expected_neg_size, f"Expected {expected_neg_size} negative sources, got {len(neg_sources)}"
+    assert len(neg_targets) == expected_neg_size, f"Expected {expected_neg_size} negative targets, got {len(neg_targets)}"
 
     # Reshape negatives into groups
     neg_sources_grouped = neg_sources.reshape(num_positive, k)
@@ -800,6 +754,7 @@ def add_gaussian_noise(embeddings: Dict[int, np.ndarray], noise_std: float) -> D
 
 def run_link_prediction_experiments(
         data_file_path,
+        negative_edges_path,
         is_directed,
         batch_ts_size,
         sliding_window_duration,
@@ -841,6 +796,12 @@ def run_link_prediction_experiments(
         test_sources, test_targets
     ])
 
+    with open(negative_edges_path, 'rb') as f:
+        negative_edges = pickle.load(f)
+
+    negative_sources = negative_edges['sources']
+    negative_targets = negative_edges['targets']
+
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
@@ -851,30 +812,45 @@ def run_link_prediction_experiments(
             logger.info(f'and saving in {precomputed_data_path}')
         logger.info("=" * 60)
 
-        train_sources_combined, train_targets_combined, train_labels_combined = create_dataset_with_negative_edges(
+        train_neg_start = 0
+        train_neg_end = len(train_sources) * negative_edges_per_positive
+
+        valid_neg_start = train_neg_end
+        valid_neg_end = valid_neg_start + len(val_sources) * negative_edges_per_positive
+
+        test_neg_start = valid_neg_end
+        test_neg_end = test_neg_start + len(test_sources) * negative_edges_per_positive
+
+        negative_sources_train = negative_sources[train_neg_start:train_neg_end]
+        negative_targets_train = negative_targets[train_neg_start:train_neg_end]
+
+        negative_sources_valid = negative_sources[valid_neg_start:valid_neg_end]
+        negative_targets_valid = negative_targets[valid_neg_start:valid_neg_end]
+
+        negative_sources_test = negative_sources[test_neg_start:test_neg_end]
+        negative_targets_test = negative_targets[test_neg_start:test_neg_end]
+
+        train_sources_combined, train_targets_combined, train_labels_combined = combine_negative_with_positive_edges(
             train_sources,
             train_targets,
-            train_sources,
-            train_targets,
-            is_directed,
+            negative_sources_train,
+            negative_targets_train,
             negative_edges_per_positive
         )
 
-        valid_sources_combined, valid_targets_combined, valid_labels_combined = create_dataset_with_negative_edges(
+        valid_sources_combined, valid_targets_combined, valid_labels_combined = combine_negative_with_positive_edges(
             val_sources,
             val_targets,
-            train_sources,
-            train_targets,
-            is_directed,
+            negative_sources_valid,
+            negative_targets_valid,
             negative_edges_per_positive
         )
 
-        test_sources_combined, test_targets_combined, test_labels_combined = create_dataset_with_negative_edges(
+        test_sources_combined, test_targets_combined, test_labels_combined = combine_negative_with_positive_edges(
             test_sources,
             test_targets,
-            train_sources,
-            train_targets,
-            is_directed,
+            negative_sources_test,
+            negative_targets_test,
             negative_edges_per_positive
         )
 
@@ -1073,6 +1049,8 @@ if __name__ == '__main__':
     # Required arguments
     parser.add_argument('--data_file_path', type=str, required=True,
                         help='Path to data file (parquet or csv format)')
+    parser.add_argument('--negative_edges_path', type=str, required=True,
+                        help='Path to negative edges file')
     parser.add_argument('--batch_ts_size', type=int, required=True,
                         help='Time duration per batch for streaming approach')
     parser.add_argument('--sliding_window_duration', type=int, required=True,
@@ -1126,6 +1104,7 @@ if __name__ == '__main__':
     # Run experiments
     full_results, streaming_results = run_link_prediction_experiments(
         data_file_path=args.data_file_path,
+        negative_edges_path=args.negative_edges_path,
         is_directed=args.is_directed,
         batch_ts_size=args.batch_ts_size,
         sliding_window_duration=args.sliding_window_duration,
