@@ -29,9 +29,12 @@ def sample_negative_edges(data_file_path, num_negatives_per_positive, is_directe
         historical_negative_percentage = 0.0
     )
 
-    with open(output_file_path, 'wb') as f:
-        pickle.dump({'sources': negative_sources, 'targets': negative_targets}, f)
+    negative_df = pd.DataFrame({
+        'u': negative_sources,
+        'i': negative_targets
+    })
 
+    negative_df.to_parquet(output_file_path, index=False)
     print(f'Generated and saved {len(negative_sources)} negative edges')
 
 

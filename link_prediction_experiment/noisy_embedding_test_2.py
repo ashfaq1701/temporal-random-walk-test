@@ -743,14 +743,39 @@ def evaluate_link_prediction(
     return results
 
 
-def add_gaussian_noise(embeddings: Dict[int, np.ndarray], alpha) -> Dict[int, np.ndarray]:
-    noisy_embeddings = {}
-    for node_id, embedding in embeddings.items():
-        noise = np.random.normal(loc=0.0, scale=1.0, size=embedding.shape)
-        blended = (1 - alpha) * embedding + alpha * noise
-        noisy_embeddings[node_id] = blended
+def add_noise_edge_replacement(sources, targets, timestamps, noise_rate, random_state=42):
+    np.random.seed(random_state)
 
-    return noisy_embeddings
+    num_edges = len(sources)
+    num_to_replace = int(num_edges * noise_rate)
+
+    # Step 1: Remove random edges
+    keep_indices = np.random.choice(num_edges, num_edges - num_to_replace, replace=False)
+    kept_sources = sources[keep_indices]
+    kept_targets = targets[keep_indices]
+    kept_timestamps = timestamps[keep_indices]
+
+    # Step 2: Add random edges with proper timestamp sampling
+    all_nodes = np.unique(np.concatenate([sources, targets]))
+    new_sources = np.random.choice(all_nodes, num_to_replace)
+    new_targets = np.random.choice(all_nodes, num_to_replace)
+
+    # Sample timestamps uniformly from [min_ts, max_ts] range
+    min_ts = timestamps.min()
+    max_ts = timestamps.max()
+    new_timestamps = np.random.uniform(min_ts, max_ts, size=num_to_replace)
+
+    # Step 3: Combine and sort by timestamp
+    final_sources = np.concatenate([kept_sources, new_sources])
+    final_targets = np.concatenate([kept_targets, new_targets])
+    final_timestamps = np.concatenate([kept_timestamps, new_timestamps])
+
+    # Sort by timestamp to maintain temporal order
+    sort_indices = np.argsort(final_timestamps)
+
+    return (final_sources[sort_indices],
+            final_targets[sort_indices],
+            final_timestamps[sort_indices])
 
 
 def run_link_prediction_experiments(
@@ -827,14 +852,6 @@ def run_link_prediction_experiments(
     negative_sources_test = negative_sources[test_neg_start:test_neg_end]
     negative_targets_test = negative_targets[test_neg_start:test_neg_end]
 
-    train_sources_combined, train_targets_combined, train_labels_combined = combine_negative_with_positive_edges(
-        train_sources,
-        train_targets,
-        negative_sources_train,
-        negative_targets_train,
-        negative_edges_per_positive
-    )
-
     valid_sources_combined, valid_targets_combined, valid_labels_combined = combine_negative_with_positive_edges(
         val_sources,
         val_targets,
@@ -851,34 +868,48 @@ def run_link_prediction_experiments(
         negative_edges_per_positive
     )
 
-    full_embeddings = train_embeddings_full_approach(
-        train_sources=train_sources,
-        train_targets=train_targets,
-        train_timestamps=train_timestamps,
-        is_directed=is_directed,
-        walk_length=walk_length,
-        num_walks_per_node=num_walks_per_node,
-        edge_picker=edge_picker,
-        embedding_dim=embedding_dim,
-        walk_use_gpu=full_embedding_use_gpu,
-        word2vec_n_workers=word2vec_n_workers
-    )
+    noise_rates = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
+    for noise_rate in noise_rates:
+        augmented_train_sources, augment_train_targets, augmented_train_timestamps = add_noise_edge_replacement(
+            train_sources, train_targets, train_timestamps, noise_rate
+        )
 
-    streaming_embeddings = train_embeddings_streaming_approach(
-        train_sources=train_sources,
-        train_targets=train_targets,
-        train_timestamps=train_timestamps,
-        batch_ts_size=batch_ts_size,
-        sliding_window_duration=sliding_window_duration,
-        weighted_sum_alpha=weighted_sum_alpha,
-        is_directed=is_directed,
-        walk_length=walk_length,
-        num_walks_per_node=num_walks_per_node,
-        edge_picker=edge_picker,
-        embedding_dim=embedding_dim,
-        walk_use_gpu=incremental_embedding_use_gpu,
-        word2vec_n_workers=word2vec_n_workers
-    )
+        train_sources_combined, train_targets_combined, train_labels_combined = combine_negative_with_positive_edges(
+            augmented_train_sources,
+            augment_train_targets,
+            negative_sources_train,
+            negative_targets_train,
+            negative_edges_per_positive
+        )
+
+        full_embeddings = train_embeddings_full_approach(
+            train_sources=augmented_train_sources,
+            train_targets=augment_train_targets,
+            train_timestamps=augmented_train_timestamps,
+            is_directed=is_directed,
+            walk_length=walk_length,
+            num_walks_per_node=num_walks_per_node,
+            edge_picker=edge_picker,
+            embedding_dim=embedding_dim,
+            walk_use_gpu=full_embedding_use_gpu,
+            word2vec_n_workers=word2vec_n_workers
+        )
+
+        streaming_embeddings = train_embeddings_streaming_approach(
+            train_sources=augmented_train_sources,
+            train_targets=augment_train_targets,
+            train_timestamps=augmented_train_timestamps,
+            batch_ts_size=batch_ts_size,
+            sliding_window_duration=sliding_window_duration,
+            weighted_sum_alpha=weighted_sum_alpha,
+            is_directed=is_directed,
+            walk_length=walk_length,
+            num_walks_per_node=num_walks_per_node,
+            edge_picker=edge_picker,
+            embedding_dim=embedding_dim,
+            walk_use_gpu=incremental_embedding_use_gpu,
+            word2vec_n_workers=word2vec_n_workers
+        )
 
     noise_alphas = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
 
