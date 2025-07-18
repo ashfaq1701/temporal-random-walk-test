@@ -822,7 +822,7 @@ def run_link_prediction_experiments(
     ])
 
     negative_edges_df = pd.read_parquet(negative_edges_path)
-    negative_sources = negative_edges_df['i'].to_numpy()
+    negative_sources = negative_edges_df['u'].to_numpy()
     negative_targets = negative_edges_df['i'].to_numpy()
 
     max_node_id = int(all_node_ids.max())
@@ -984,10 +984,6 @@ def run_link_prediction_experiments(
 
                 full_results[noise_rate][key].append(current_full_results[key])
 
-
-    logger.info(f"\nFull Approach Results Across Noise Levels:")
-    logger.info("=" * 80)
-
     logger.info(f"\nStreaming Approach Results Across Noise Levels:")
     logger.info("=" * 80)
 
@@ -1000,6 +996,9 @@ def run_link_prediction_experiments(
                     mean_val = np.mean(values)
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
+
+    logger.info(f"\nFull Approach Results Across Noise Levels:")
+    logger.info("=" * 80)
 
     for noise_rate in noise_rates:
         if noise_rate in full_results:
