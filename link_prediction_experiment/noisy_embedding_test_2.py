@@ -821,11 +821,9 @@ def run_link_prediction_experiments(
         test_sources, test_targets
     ])
 
-    with open(negative_edges_path, 'rb') as f:
-        negative_edges = pickle.load(f)
-
-    negative_sources = negative_edges['sources']
-    negative_targets = negative_edges['targets']
+    negative_edges_df = pd.read_parquet(negative_edges_path)
+    negative_sources = negative_edges_df['i'].to_numpy()
+    negative_targets = negative_edges_df['i'].to_numpy()
 
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
@@ -868,8 +866,13 @@ def run_link_prediction_experiments(
         negative_edges_per_positive
     )
 
+    streaming_results = {}
+    full_results = {}
+
     noise_rates = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
     for noise_rate in noise_rates:
+        logger.info(f'\n--- Noise rate: {noise_rate} ----')
+
         augmented_train_sources, augment_train_targets, augmented_train_timestamps = add_noise_edge_replacement(
             train_sources, train_targets, train_timestamps, noise_rate
         )
@@ -911,21 +914,14 @@ def run_link_prediction_experiments(
             word2vec_n_workers=word2vec_n_workers
         )
 
-    noise_alphas = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
+        device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
-    logger.info("=" * 60)
-    logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
-    logger.info("=" * 60)
+        logger.info("=" * 60)
+        logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
+        logger.info("=" * 60)
 
-    device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
-
-    streaming_results = {}
-
-    for noise_alpha in noise_alphas:
         for run in range(n_runs):
-            logger.info(f"\n--- Noise alpha: {noise_alpha}, Run {run + 1}/{n_runs} ---")
-
-            noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_alpha)
+            logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
             current_streaming_results = evaluate_link_prediction(
                 train_sources=train_sources_combined,
@@ -937,7 +933,7 @@ def run_link_prediction_experiments(
                 test_sources=test_sources_combined,
                 test_targets=test_targets_combined,
                 test_labels=test_labels_combined,
-                embedding_tensor=get_embedding_tensor(noisy_embeddings, max_node_id),
+                embedding_tensor=get_embedding_tensor(streaming_embeddings, max_node_id),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 n_epochs=n_epochs,
@@ -946,38 +942,20 @@ def run_link_prediction_experiments(
             )
 
             for key in current_streaming_results.keys():
-                if noise_alpha not in streaming_results:
-                    streaming_results[noise_alpha] = {}
+                if noise_rate not in streaming_results:
+                    streaming_results[noise_rate] = {}
 
-                if key not in streaming_results[noise_alpha]:
-                    streaming_results[noise_alpha][key] = []
+                if key not in streaming_results[noise_rate]:
+                    streaming_results[noise_rate][key] = []
 
-                streaming_results[noise_alpha][key].append(current_streaming_results[key])
+                streaming_results[noise_rate][key].append(current_streaming_results[key])
 
-    logger.info(f"\nStreaming Approach Results Across Noise Levels:")
-    logger.info("=" * 80)
+        logger.info("=" * 60)
+        logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
+        logger.info("=" * 60)
 
-    for noise_alpha in noise_alphas:
-        if noise_alpha in streaming_results:
-            logger.info(f"\nNoise Level {noise_alpha:.3f}:")
-            for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
-                if metric in streaming_results[noise_alpha]:
-                    values = streaming_results[noise_alpha][metric]
-                    mean_val = np.mean(values)
-                    std_val = np.std(values)
-                    logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
-
-    logger.info("=" * 60)
-    logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
-    logger.info("=" * 60)
-
-    full_results = {}
-
-    for noise_alpha in noise_alphas:
         for run in range(n_runs):
-            logger.info(f"\n--- Noise alpha: {noise_alpha}, Run {run + 1}/{n_runs} ---")
-
-            noisy_embeddings = add_gaussian_noise(full_embeddings, noise_alpha)
+            logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
             current_full_results = evaluate_link_prediction(
                 train_sources=train_sources_combined,
@@ -989,7 +967,7 @@ def run_link_prediction_experiments(
                 test_sources=test_sources_combined,
                 test_targets=test_targets_combined,
                 test_labels=test_labels_combined,
-                embedding_tensor=get_embedding_tensor(noisy_embeddings, max_node_id),
+                embedding_tensor=get_embedding_tensor(full_embeddings, max_node_id),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 n_epochs=n_epochs,
@@ -998,23 +976,37 @@ def run_link_prediction_experiments(
             )
 
             for key in current_full_results.keys():
-                if noise_alpha not in full_results:
-                    full_results[noise_alpha] = {}
+                if noise_rate not in full_results:
+                    full_results[noise_rate] = {}
 
-                if key not in full_results[noise_alpha]:
-                    full_results[noise_alpha][key] = []
+                if key not in full_results[noise_rate]:
+                    full_results[noise_rate][key] = []
 
-                full_results[noise_alpha][key].append(current_full_results[key])
+                full_results[noise_rate][key].append(current_full_results[key])
+
 
     logger.info(f"\nFull Approach Results Across Noise Levels:")
     logger.info("=" * 80)
 
-    for noise_alpha in noise_alphas:
-        if noise_alpha in full_results:
-            logger.info(f"\nNoise Level {noise_alpha:.3f}:")
+    logger.info(f"\nStreaming Approach Results Across Noise Levels:")
+    logger.info("=" * 80)
+
+    for noise_rate in noise_rates:
+        if noise_rate in streaming_results:
+            logger.info(f"\nNoise Level {noise_rate:.3f}:")
             for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
-                if metric in full_results[noise_alpha]:
-                    values = full_results[noise_alpha][metric]
+                if metric in streaming_results[noise_rate]:
+                    values = streaming_results[noise_rate][metric]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
+
+    for noise_rate in noise_rates:
+        if noise_rate in full_results:
+            logger.info(f"\nNoise Level {noise_rate:.3f}:")
+            for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
+                if metric in full_results[noise_rate]:
+                    values = full_results[noise_rate][metric]
                     mean_val = np.mean(values)
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")

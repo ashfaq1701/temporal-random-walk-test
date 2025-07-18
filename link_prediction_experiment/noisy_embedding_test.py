@@ -797,11 +797,9 @@ def run_link_prediction_experiments(
         test_sources, test_targets
     ])
 
-    with open(negative_edges_path, 'rb') as f:
-        negative_edges = pickle.load(f)
-
-    negative_sources = negative_edges['sources']
-    negative_targets = negative_edges['targets']
+    negative_edges_df = pd.read_parquet(negative_edges_path)
+    negative_sources = negative_edges_df['i'].to_numpy()
+    negative_targets = negative_edges_df['i'].to_numpy()
 
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
