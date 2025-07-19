@@ -5,45 +5,7 @@ import time
 from typing import Optional, List, Tuple
 
 import numpy as np
-import psutil
 from temporal_random_walk import TemporalRandomWalk
-
-
-class MemoryTracker:
-    """Reliable memory tracker with garbage collection."""
-
-    def __init__(self):
-        self.process = psutil.Process(os.getpid())
-        self.force_gc()  # Clean start
-        self.baseline_memory = self.get_current_memory()
-
-    def get_current_memory(self) -> float:
-        """Get current memory usage in MB."""
-        return self.process.memory_info().rss / 1024 / 1024
-
-    def get_memory_delta(self) -> float:
-        """Get memory increase since baseline."""
-        return self.get_current_memory() - self.baseline_memory
-
-    def reset_baseline(self):
-        """Reset baseline to current memory."""
-        self.force_gc()
-        self.baseline_memory = self.get_current_memory()
-
-    def force_gc(self):
-        """Force garbage collection and brief pause."""
-        gc.collect()
-        time.sleep(0.05)  # 50ms pause for OS cleanup
-
-    def get_detailed_memory(self) -> dict:
-        """Get detailed memory information."""
-        mem_info = self.process.memory_info()
-        return {
-            'rss_mb': mem_info.rss / 1024 / 1024,
-            'vms_mb': mem_info.vms / 1024 / 1024,
-            'delta_mb': self.get_memory_delta(),
-            'percent': self.process.memory_percent()
-        }
 
 
 def generate_temporal_graph(num_nodes: int,
@@ -94,7 +56,7 @@ def generate_temporal_graph(num_nodes: int,
 def create_streaming_graph(num_batches: int,
                            num_edges_per_batch: int,
                            ts_count_per_batch: int,
-                           num_nodes: int = 1_000_000,
+                           num_nodes: int = 100_000,
                            random_state: Optional[int] = None) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     if random_state is not None:
         np.random.seed(random_state)
@@ -138,15 +100,13 @@ def create_streaming_graph(num_batches: int,
     return batches
 
 
-def get_memory_usage_with_variable_node_count(is_directed, with_weights, edge_count=1_000_000, timestamp_count=10_000):
+def get_memory_usage_with_variable_node_count(is_directed, with_weights, edge_count=10_000_000, timestamp_count=10_000):
     print(f'Testing with increasing number of nodes')
-
     node_counts = np.logspace(start=1, stop=7, num=7, base=10, dtype=int)
     results = {}
 
     for current_node_count in node_counts:
         print(f'Testing with node count {current_node_count}')
-
         gc.collect()
         time.sleep(0.5)
 
@@ -156,8 +116,6 @@ def get_memory_usage_with_variable_node_count(is_directed, with_weights, edge_co
             num_timestamps=timestamp_count
         )
 
-        tracker = MemoryTracker()
-
         temporal_rw = TemporalRandomWalk(
             is_directed=is_directed,
             use_gpu=False,
@@ -166,25 +124,23 @@ def get_memory_usage_with_variable_node_count(is_directed, with_weights, edge_co
         )
         temporal_rw.add_multiple_edges(sources, targets, timestamps)
 
-        memory_used_mb = tracker.get_memory_delta()
+        memory_used_mb = temporal_rw.get_memory_used() / (1024 * 1024)
         results[current_node_count] = memory_used_mb
 
         del temporal_rw, sources, targets, timestamps
         gc.collect()
-        print(f'Node count {current_node_count} used {memory_used_mb} MB')
+        print(f'Node count {current_node_count} used {memory_used_mb:.2f} MB')
 
     return results
 
 
 def get_memory_usage_with_variable_edge_count(is_directed, with_weights, node_count=10_000, timestamp_count=10_000):
     print(f'Testing with increasing number of edges')
-
     edge_counts = np.logspace(start=1, stop=8, num=8, base=10, dtype=int)
     results = {}
 
     for current_edge_count in edge_counts:
         print(f'Testing with edge count {current_edge_count}')
-
         gc.collect()
         time.sleep(0.5)
 
@@ -194,8 +150,6 @@ def get_memory_usage_with_variable_edge_count(is_directed, with_weights, node_co
             num_timestamps=timestamp_count
         )
 
-        tracker = MemoryTracker()
-
         temporal_rw = TemporalRandomWalk(
             is_directed=is_directed,
             use_gpu=False,
@@ -204,26 +158,23 @@ def get_memory_usage_with_variable_edge_count(is_directed, with_weights, node_co
         )
         temporal_rw.add_multiple_edges(sources, targets, timestamps)
 
-        memory_used_mb = tracker.get_memory_delta()
+        memory_used_mb = temporal_rw.get_memory_used() / (1024 * 1024)
         results[current_edge_count] = memory_used_mb
 
         del temporal_rw, sources, targets, timestamps
         gc.collect()
-
-        print(f'Edge count {current_edge_count} used {memory_used_mb} MB')
+        print(f'Edge count {current_edge_count} used {memory_used_mb:.2f} MB')
 
     return results
 
 
-def get_memory_usage_with_variable_timestamp_count(is_directed, with_weights, node_count=10_000, edge_count=1_000_000):
+def get_memory_usage_with_variable_timestamp_count(is_directed, with_weights, node_count=10_000, edge_count=10_000_000):
     print(f'Testing with increasing number of timestamps')
-
-    numbers_of_ts = np.logspace(start=1, stop=8, num=8, base=10, dtype=int)
+    numbers_of_ts = np.logspace(start=1, stop=7, num=7, base=10, dtype=int)
     results = {}
 
     for current_number_of_ts in numbers_of_ts:
         print(f'Testing with timestamp count {current_number_of_ts}')
-
         gc.collect()
         time.sleep(0.5)
 
@@ -233,8 +184,6 @@ def get_memory_usage_with_variable_timestamp_count(is_directed, with_weights, no
             num_timestamps=current_number_of_ts
         )
 
-        tracker = MemoryTracker()
-
         temporal_rw = TemporalRandomWalk(
             is_directed=is_directed,
             use_gpu=False,
@@ -243,13 +192,12 @@ def get_memory_usage_with_variable_timestamp_count(is_directed, with_weights, no
         )
         temporal_rw.add_multiple_edges(sources, targets, timestamps)
 
-        memory_used_mb = tracker.get_memory_delta()
+        memory_used_mb = temporal_rw.get_memory_used() / (1024 * 1024)
         results[current_number_of_ts] = memory_used_mb
 
         del temporal_rw, sources, targets, timestamps
         gc.collect()
-
-        print(f'Timestamp count {current_number_of_ts} used {memory_used_mb} MB')
+        print(f'Timestamp count {current_number_of_ts} used {memory_used_mb:.2f} MB')
 
     return results
 
@@ -263,12 +211,10 @@ def test_streaming_window(is_directed, with_weights, num_batches, num_edges_per_
         ts_count_per_batch=ts_count_per_batch
     )
 
-    tracker = MemoryTracker()
-
     streaming_temporal_rw = TemporalRandomWalk(
         is_directed=is_directed,
         use_gpu=False,
-        max_time_capacity=ts_count_per_batch,  # Window = one batch time span
+        max_time_capacity=ts_count_per_batch,
         enable_weight_computation=with_weights
     )
 
@@ -276,13 +222,12 @@ def test_streaming_window(is_directed, with_weights, num_batches, num_edges_per_
 
     for batch_idx, (batch_sources, batch_targets, batch_timestamps) in enumerate(graph_batches):
         print(f'Starting processing batch {batch_idx + 1}')
-
         streaming_temporal_rw.add_multiple_edges(batch_sources, batch_targets, batch_timestamps)
 
-        current_memory = tracker.get_memory_delta()
-        memory_results.append(current_memory)
+        memory_used_mb = streaming_temporal_rw.get_memory_used() / (1024 * 1024)
+        memory_results.append(memory_used_mb)
 
-        print(f'Batch {batch_idx + 1}: {current_memory:.2f} MB')
+        print(f'Batch {batch_idx + 1}: {memory_used_mb:.2f} MB')
 
     return memory_results
 
@@ -295,26 +240,13 @@ def run_all_memory_tests():
             config = f"{'directed' if is_directed else 'undirected'}_{'with_weights' if with_weights else 'without_weights'}"
             print(f"\nTesting {config}...")
 
-            # Variable nodes
             results[f"increasing_nodes_{config}"] = get_memory_usage_with_variable_node_count(is_directed, with_weights)
-
-            # Variable edges
             results[f"increasing_edges_{config}"] = get_memory_usage_with_variable_edge_count(is_directed, with_weights)
-
-            # Variable timestamps
-            results[f"increasing_timestamps_{config}"] = get_memory_usage_with_variable_timestamp_count(is_directed,
-                                                                                                        with_weights)
-
-            # Streaming window
+            results[f"increasing_timestamps_{config}"] = get_memory_usage_with_variable_timestamp_count(is_directed, with_weights)
             results[f"streaming_window_{config}"] = test_streaming_window(
-                is_directed,
-                with_weights,
-                num_batches=100,
-                num_edges_per_batch=10_000_000,
-                ts_count_per_batch=1_000_000
+                is_directed, with_weights, num_batches=100, num_edges_per_batch=10_000_000, ts_count_per_batch=1_000_000
             )
 
-    # Save results
     os.makedirs("results", exist_ok=True)
     with open("results/memory_benchmarking.pickle", "wb") as f:
         pickle.dump(results, f)
