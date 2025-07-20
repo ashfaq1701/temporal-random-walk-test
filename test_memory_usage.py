@@ -136,7 +136,7 @@ def get_memory_usage_with_variable_node_count(is_directed, with_weights, edge_co
 
 def get_memory_usage_with_variable_edge_count(is_directed, with_weights, node_count=10_000, timestamp_count=10_000):
     print(f'Testing with increasing number of edges')
-    edge_counts = np.logspace(start=1, stop=8, num=8, base=10, dtype=int)
+    edge_counts = np.logspace(start=1, stop=9, num=9, base=10, dtype=int)
     results = {}
 
     for current_edge_count in edge_counts:
