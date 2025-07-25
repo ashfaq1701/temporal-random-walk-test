@@ -11,4 +11,3 @@ networkx
 gensim
 torch
 temporal-negative-edge-sampler
-external/TGB
