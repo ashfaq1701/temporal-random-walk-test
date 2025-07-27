@@ -798,7 +798,7 @@ def run_link_prediction_experiments(
     ])
 
     negative_edges_df = pd.read_parquet(negative_edges_path)
-    negative_sources = negative_edges_df['i'].to_numpy()
+    negative_sources = negative_edges_df['u'].to_numpy()
     negative_targets = negative_edges_df['i'].to_numpy()
 
     max_node_id = int(all_node_ids.max())
