@@ -749,28 +749,24 @@ def add_noise_edge_replacement(sources, targets, timestamps, noise_rate, random_
     num_edges = len(sources)
     num_to_replace = int(num_edges * noise_rate)
 
-    # Step 1: Remove random edges
-    keep_indices = np.random.choice(num_edges, num_edges - num_to_replace, replace=False)
-    kept_sources = sources[keep_indices]
-    kept_targets = targets[keep_indices]
-    kept_timestamps = timestamps[keep_indices]
+    # Step 1: Select edges to rewire (keep source and timestamp, only change target)
+    rewire_indices = np.random.choice(num_edges, num_to_replace, replace=False)
 
-    # Step 2: Add random edges with proper timestamp sampling
+    # Create a copy of the original arrays
+    final_sources = sources.copy()
+    final_targets = targets.copy()
+    final_timestamps = timestamps.copy()
+
+    # Step 2: Rewire selected edges - keep source and timestamp, change target
     all_nodes = np.unique(np.concatenate([sources, targets]))
-    new_sources = np.random.choice(all_nodes, num_to_replace)
+
+    # For each edge to rewire, randomly select a new target
     new_targets = np.random.choice(all_nodes, num_to_replace)
 
-    # Sample timestamps uniformly from [min_ts, max_ts] range
-    min_ts = timestamps.min()
-    max_ts = timestamps.max()
-    new_timestamps = np.random.uniform(min_ts, max_ts, size=num_to_replace)
+    # Replace the targets of the selected edges
+    final_targets[rewire_indices] = new_targets
 
-    # Step 3: Combine and sort by timestamp
-    final_sources = np.concatenate([kept_sources, new_sources])
-    final_targets = np.concatenate([kept_targets, new_targets])
-    final_timestamps = np.concatenate([kept_timestamps, new_timestamps])
-
-    # Sort by timestamp to maintain temporal order
+    # Step 3: Sort by timestamp to maintain temporal order
     sort_indices = np.argsort(final_timestamps)
 
     return (final_sources[sort_indices],
