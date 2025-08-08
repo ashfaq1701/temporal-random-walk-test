@@ -9,5 +9,6 @@ raphtory
 networkx
 gensim
 torch
-temporal-negative-edge-sampler
+#temporal-negative-edge-sampler
 tqdm
+stellargraph
