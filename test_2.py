@@ -242,7 +242,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Temporal Walk Benchmark")
 
     parser.add_argument('--n_runs', type=int, default=3, help='Number of runs')
-    parser.add_argument('--data_file', type=str, default="data/sx-stackoverflow.csv", help='Data filepath')
+    parser.add_argument('--data_file', type=str, required=True, help='Data filepath')
 
     args = parser.parse_args()
     main(args.data_file, args.n_runs)
