@@ -207,6 +207,7 @@ def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, n_run
 
 def main(data_file_path, n_runs):
     data_df = load_data(data_file_path)
+    print(f'Loaded data, it has {len(data_df)} rows.')
 
     stellargraph_edge_addition = progressively_higher_edge_addition_test_stellargraph(data_df, n_runs)
     raphtory_edge_addition = progressively_higher_edge_addition_test_raphtory(data_df, n_runs)
