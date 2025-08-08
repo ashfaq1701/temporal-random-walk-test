@@ -208,13 +208,13 @@ def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, n_run
 def main(data_file_path, n_runs):
     data_df = load_data(data_file_path)
 
+    stellargraph_edge_addition = progressively_higher_edge_addition_test_stellargraph(data_df, n_runs)
+    raphtory_edge_addition = progressively_higher_edge_addition_test_raphtory(data_df, n_runs)
+
     trw_edge_addition_gpu_with_weights = progressively_higher_edge_addition_test_trw(data_df, True, True, n_runs)
     trw_edge_addition_gpu_without_weights = progressively_higher_edge_addition_test_trw(data_df, True, False, n_runs)
     trw_edge_addition_cpu_with_weights = progressively_higher_edge_addition_test_trw(data_df, False, True, n_runs)
     trw_edge_addition_cpu_without_weights = progressively_higher_edge_addition_test_trw(data_df, False, False, n_runs)
-
-    raphtory_edge_addition = progressively_higher_edge_addition_test_raphtory(data_df, n_runs)
-    stellargraph_edge_addition = progressively_higher_edge_addition_test_stellargraph(data_df, n_runs)
 
     walk_sampling_gpu_weight_based = progressively_higher_walk_sampling_test(data_df, True, True, n_runs)
     walk_sampling_gpu_index_based = progressively_higher_walk_sampling_test(data_df, True, False, n_runs)
