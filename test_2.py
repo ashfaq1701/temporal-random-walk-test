@@ -126,7 +126,7 @@ def progressively_higher_edge_addition_test_stellargraph(data_df, n_runs):
     targets = data_df['i'].to_numpy().astype(str)
     timestamps = data_df['ts'].to_numpy()
 
-    for edge_count in edge_counts:
+    for edge_count in edge_counts[:-2]:
         print(f"\n--- Testing with {edge_count} edges ---")
 
         current_sources = sources[:edge_count]
@@ -145,6 +145,7 @@ def progressively_higher_edge_addition_test_stellargraph(data_df, n_runs):
         nodes = pd.DataFrame(index=unique_nodes)
 
         current_times = []
+
         for run in range(n_runs):
             start_time = time.time()
             graph = StellarGraph(
