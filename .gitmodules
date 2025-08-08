@@ -1,3 +1,6 @@
 [submodule "external/TGB"]
 	path = external/TGB
 	url = git@github.com:shenyangHuang/TGB.git
+[submodule "libs/stellargraph"]
+	path = libs/stellargraph
+	url = https://github.com/ashfaq1701/stellargraph.git
