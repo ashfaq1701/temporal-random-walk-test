@@ -1,5 +1,6 @@
 import argparse
 import logging
+import random
 import os
 import pickle
 import warnings
@@ -22,6 +23,8 @@ from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+random.seed(42); np.random.seed(42); torch.manual_seed(42)
 
 
 @contextmanager
@@ -245,21 +248,15 @@ def train_link_prediction_model(model,
                                 learning_rate=0.001,
                                 epochs=20,
                                 device='cpu',
-                                patience=5,
-                                use_amp=True):
+                                patience=5):
     logger.info(f"Training neural network on {len(X_sources_train):,} samples with batch size {batch_size:,}")
 
     # Move model to device
     model = model.to(device)
-    use_amp = use_amp and device == 'cuda'
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     early_stopping = EarlyStopping(mode='max', patience=patience)
-
-    scaler = GradScaler() if use_amp else None
-    if use_amp:
-        logger.info("Mixed precision training enabled")
 
     X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long)
     X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long)
@@ -314,18 +311,10 @@ def train_link_prediction_model(model,
 
             optimizer.zero_grad()
 
-            if use_amp:
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    outputs = model(batch_sources, batch_targets)
-                    loss = criterion(outputs, batch_y)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                outputs = model(batch_sources, batch_targets)
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
+            outputs = model(batch_sources, batch_targets)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
 
             total_train_loss += loss.item()
 
@@ -349,13 +338,8 @@ def train_link_prediction_model(model,
                 batch_targets = batch_targets.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
 
-                if use_amp:
-                    with autocast(device_type='cuda', dtype=torch.float16):
-                        outputs = model(batch_sources, batch_targets)
-                        loss = criterion(outputs, batch_y)
-                else:
-                    outputs = model(batch_sources, batch_targets)
-                    loss = criterion(outputs, batch_y)
+                outputs = model(batch_sources, batch_targets)
+                loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
 
@@ -408,11 +392,9 @@ def predict_with_model(model,
                        X_sources_test,
                        X_targets_test,
                        batch_size,
-                       device='cpu',
-                       use_amp=True):
+                       device='cpu'):
     model = model.to(device)
     model.eval()
-    use_amp = use_amp and device == 'cuda'
 
     logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
 
@@ -442,11 +424,7 @@ def predict_with_model(model,
             batch_sources = batch_sources.to(device, non_blocking=True)
             batch_targets = batch_targets.to(device, non_blocking=True)
 
-            if use_amp:
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    logits = model(batch_sources, batch_targets)
-            else:
-                logits = model(batch_sources, batch_targets)
+            logits = model(batch_sources, batch_targets)
 
             probs = torch.sigmoid(logits).detach().float()
             predictions_list.append(probs)
@@ -1047,7 +1025,7 @@ if __name__ == '__main__':
                         help='Edge picker for random walks')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
-    parser.add_argument('--edge_op', type=str, default='hadamard',
+    parser.add_argument('--edge_op', type=str, default='weighted-l1',
                         choices=['average', 'hadamard', 'weighted-l1', 'weighted-l2'],
                         help='Edge operation for combining node embeddings')
 
@@ -1060,7 +1038,7 @@ if __name__ == '__main__':
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
                         help='Number of experimental runs for averaging results')
-    parser.add_argument('--batch_size', type=int, default=1_000_000, help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=10_000, help='Batch size for training')
 
     # GPU settings
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
