@@ -3,8 +3,6 @@ import pickle
 import argparse
 import pandas as pd
 import numpy as np
-from stellargraph.core import StellarGraph
-from stellargraph.data import TemporalRandomWalk as TemporalRandomWalkStellarGraph
 from raphtory import Graph
 from temporal_random_walk import TemporalRandomWalk
 
@@ -115,51 +113,6 @@ def progressively_higher_edge_addition_test_raphtory(data_df, n_runs):
     return results
 
 
-def progressively_higher_edge_addition_test_stellargraph(data_df, n_runs):
-    results = []
-
-    sources = data_df['u'].to_numpy().astype(str)
-    targets = data_df['i'].to_numpy().astype(str)
-    timestamps = data_df['ts'].to_numpy()
-
-    for edge_count in edge_counts:
-        print(f"\n--- Testing with {edge_count} edges ---")
-
-        current_sources = sources[:edge_count]
-        current_targets = targets[:edge_count]
-        current_timestamps = timestamps[:edge_count]
-
-        # Create edges DataFrame
-        edges = pd.DataFrame({
-            "source": current_sources,
-            "target": current_targets,
-            "time": current_timestamps
-        })
-
-        # Create nodes DataFrame
-        unique_nodes = np.unique(np.concatenate([current_sources, current_targets]))
-        nodes = pd.DataFrame(index=unique_nodes)
-
-        current_times = []
-
-        for run in range(n_runs):
-            start_time = time.time()
-            graph = StellarGraph(
-                nodes=nodes,
-                edges=edges,
-                edge_weight_column="time",
-            )
-            temporal_rw = TemporalRandomWalkStellarGraph(graph)
-            run_time = time.time() - start_time
-            current_times.append(run_time)
-
-        avg_time = np.mean(current_times)
-        results.append(current_times)
-        print(f"[RESULT] Avg time for {edge_count} edges: {avg_time:.3f} seconds")
-
-    return results
-
-
 def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, fixed_edges_for_walk_gen, n_runs):
     all_num_walks = [
         10_000, 50_000, 100_000, 200_000, 500_000,
@@ -221,7 +174,6 @@ def main(data_file_path, fixed_edges_for_walk_gen, n_runs):
     trw_edge_addition_cpu_with_weights = progressively_higher_edge_addition_test_trw(data_df, False, True, n_runs)
     trw_edge_addition_cpu_without_weights = progressively_higher_edge_addition_test_trw(data_df, False, False, n_runs)
 
-    stellargraph_edge_addition = progressively_higher_edge_addition_test_stellargraph(data_df, n_runs)
     raphtory_edge_addition = progressively_higher_edge_addition_test_raphtory(data_df, n_runs)
 
     results = {
@@ -233,11 +185,10 @@ def main(data_file_path, fixed_edges_for_walk_gen, n_runs):
         'walk_sampling_gpu_index_based': walk_sampling_gpu_index_based,
         'walk_sampling_cpu_weight_based': walk_sampling_cpu_weight_based,
         'walk_sampling_cpu_index_based': walk_sampling_cpu_index_based,
-        'raphtory_edge_addition': raphtory_edge_addition,
-        'stellargraph_edge_addition': stellargraph_edge_addition
+        'raphtory_edge_addition': raphtory_edge_addition
     }
 
-    pickle.dump(results, open(f"results/results_incremental_ingestion_and_walk_sampling.pickle", "wb"))
+    pickle.dump(results, open(f"results/results_trw_raphtory_edge_addition.pickle", "wb"))
 
 
 
