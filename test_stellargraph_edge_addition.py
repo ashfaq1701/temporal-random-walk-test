@@ -27,7 +27,7 @@ def load_data(data_file_path):
     df = pd.read_csv(
         data_file_path,
         sep=r'\s+',
-        skiprows=1,
+        skiprows=2,
         header=None,
         names=['u', 'i', 'x', 'ts'])
 
