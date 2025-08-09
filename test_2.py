@@ -160,7 +160,7 @@ def progressively_higher_edge_addition_test_stellargraph(data_df, n_runs):
     return results
 
 
-def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, n_runs):
+def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, fixed_edges_for_walk_gen, n_runs):
     all_num_walks = [
         10_000, 50_000, 100_000, 200_000, 500_000,
         1_000_000, 2_000_000, 5_000_000, 10_000_000
@@ -171,6 +171,11 @@ def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, n_run
     sources = data_df['u'].to_numpy()
     targets = data_df['i'].to_numpy()
     timestamps = data_df['ts'].to_numpy()
+
+    if fixed_edges_for_walk_gen != -1:
+        sources = sources[:fixed_edges_for_walk_gen]
+        targets = targets[:fixed_edges_for_walk_gen]
+        timestamps = timestamps[:fixed_edges_for_walk_gen]
 
     trw = TemporalRandomWalk(
         is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
@@ -202,14 +207,14 @@ def progressively_higher_walk_sampling_test(data_df, use_gpu, use_weights, n_run
     return results
 
 
-def main(data_file_path, n_runs):
+def main(data_file_path, fixed_edges_for_walk_gen, n_runs):
     data_df = load_data(data_file_path)
     print(f'Loaded data, it has {len(data_df)} rows.')
 
-    walk_sampling_gpu_weight_based = progressively_higher_walk_sampling_test(data_df, True, True, n_runs)
-    walk_sampling_gpu_index_based = progressively_higher_walk_sampling_test(data_df, True, False, n_runs)
-    walk_sampling_cpu_weight_based = progressively_higher_walk_sampling_test(data_df, False, True, n_runs)
-    walk_sampling_cpu_index_based = progressively_higher_walk_sampling_test(data_df, False, False, n_runs)
+    walk_sampling_gpu_weight_based = progressively_higher_walk_sampling_test(data_df, True, True, fixed_edges_for_walk_gen, n_runs)
+    walk_sampling_gpu_index_based = progressively_higher_walk_sampling_test(data_df, True, False, fixed_edges_for_walk_gen, n_runs)
+    walk_sampling_cpu_weight_based = progressively_higher_walk_sampling_test(data_df, False, True, fixed_edges_for_walk_gen,  n_runs)
+    walk_sampling_cpu_index_based = progressively_higher_walk_sampling_test(data_df, False, False, fixed_edges_for_walk_gen, n_runs)
 
     trw_edge_addition_gpu_with_weights = progressively_higher_edge_addition_test_trw(data_df, True, True, n_runs)
     trw_edge_addition_gpu_without_weights = progressively_higher_edge_addition_test_trw(data_df, True, False, n_runs)
@@ -241,6 +246,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--n_runs', type=int, default=3, help='Number of runs')
     parser.add_argument('--data_file', type=str, required=True, help='Data filepath')
+    parser.add_argument('--fixed_edges_for_walk_gen', type=int, default=-1, help='Number of edges used to generate walks')
 
     args = parser.parse_args()
-    main(args.data_file, args.n_runs)
+    main(args.data_file, args.fixed_edges_for_walk_gen, args.n_runs)
