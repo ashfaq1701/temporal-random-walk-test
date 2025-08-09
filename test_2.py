@@ -23,15 +23,14 @@ edge_counts = [
     50_000_000, # 50M
     100_000_000,# 100M
     200_000_000,# 200M
-    301_183_000 # Full dataset
+    256_804_235 # Full dataset
 ]
-
 
 def load_data(data_file_path):
     df = pd.read_csv(
         data_file_path,
         sep=r'\s+',
-        skiprows=2,
+        skiprows=1,
         header=None,
         names=['u', 'i', 'x', 'ts'])
 
