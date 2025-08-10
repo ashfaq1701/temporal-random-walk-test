@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from gensim.models import Word2Vec
+from gensim.models import FastText
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset
@@ -447,7 +447,7 @@ def predict_with_model(model,
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
                                    is_directed, walk_length, num_walks_per_node, edge_picker,
-                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
+                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42, negative=10):
     """Train embeddings using full dataset approach."""
     logger.info("Training embeddings with full approach")
 
@@ -498,13 +498,14 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
     # Train Word2Vec
     logger.info(f"Training Word2Vec on {len(clean_walks)} walks")
     with suppress_word2vec_output():
-        model = Word2Vec(
-            sentences=clean_walks,
+        model = FastText(
+            sentences=clean_walks,  # build+train in one go (like Word2Vec did)
             vector_size=embedding_dim,
             window=10,
             min_count=1,
             workers=word2vec_n_workers,
             sg=1,
+            negative=negative,
             seed=seed
         )
 
@@ -533,7 +534,7 @@ def train_embeddings_streaming_approach(
     num_batches = int(np.ceil(total_range / batch_ts_size))
     logger.info(f"Processing {num_batches} batches with duration={batch_ts_size:,}")
 
-    w2v_model = None
+    ft_model = None
 
     for batch_idx in range(num_batches):
         batch_start_ts = min_ts + batch_idx * batch_ts_size
@@ -575,8 +576,8 @@ def train_embeddings_streaming_approach(
 
         try:
             with suppress_word2vec_output():
-                if w2v_model is None:
-                    w2v_model = Word2Vec(
+                if ft_model is None:
+                    ft_model = FastText(
                         vector_size=embedding_dim,
                         window=10,
                         min_count=1,
@@ -585,12 +586,12 @@ def train_embeddings_streaming_approach(
                         negative=negative,
                         seed=seed
                     )
-                    w2v_model.build_vocab(clean_walks)
+                    ft_model.build_vocab(clean_walks)
                 else:
-                    w2v_model.build_vocab(clean_walks, update=True)
+                    ft_model.build_vocab(clean_walks, update=True)
 
-                total_words = sum(len(s) for s in clean_walks)
-                w2v_model.train(
+                total_words = sum(len(s) for s in clean_walks)  # keep your current accounting
+                ft_model.train(
                     clean_walks,
                     total_words=total_words,
                     epochs=batch_epochs
@@ -600,11 +601,11 @@ def train_embeddings_streaming_approach(
             logger.error(f"Error processing batch {batch_idx + 1}: {e}")
             continue
 
-    if w2v_model is None:
+    if ft_model is None:
         logger.warning("No batches produced walks; returning empty embedding store.")
         return {}
 
-    node_embeddings = {int(k): w2v_model.wv[k] for k in w2v_model.wv.index_to_key}
+    node_embeddings = {int(k): ft_model.wv[k] for k in ft_model.wv.index_to_key}
 
     logger.info(f"Streaming completed. Final embedding store: {len(node_embeddings)} nodes")
     return node_embeddings
