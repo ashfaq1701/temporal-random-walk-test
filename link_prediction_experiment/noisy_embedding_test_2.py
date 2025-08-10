@@ -1003,6 +1003,8 @@ if __name__ == '__main__':
                         help='Path to negative edges file')
     parser.add_argument('--batch_ts_size', type=int, required=True,
                         help='Time duration per batch for streaming approach')
+    parser.add_argument('--sliding_window_duration', type=int, required=True,
+                        help='Sliding window duration for temporal random walk')
     parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True,
                         help='Whether the graph is directed (true/false)')
 
