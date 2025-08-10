@@ -531,7 +531,7 @@ def train_embeddings_streaming_approach(
     train_sources, train_targets, train_timestamps,
     batch_ts_size, sliding_window_duration, is_directed,
     walk_length, num_walks_per_node, edge_picker, embedding_dim,
-    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42
+    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42, negative=10
 ):
     """Train embeddings using a single incremental Word2Vec model (no EMA)."""
     logger.info("Training embeddings with streaming approach (incremental Word2Vec)")
@@ -595,6 +595,7 @@ def train_embeddings_streaming_approach(
                         min_count=1,
                         workers=word2vec_n_workers,
                         sg=1,
+                        negative=negative,
                         seed=seed
                     )
                     w2v_model.build_vocab(clean_walks)
