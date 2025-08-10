@@ -447,7 +447,7 @@ def predict_with_model(model,
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
                                    is_directed, walk_length, num_walks_per_node, edge_picker,
-                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42, negative=10):
+                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
     """Train embeddings using full dataset approach."""
     logger.info("Training embeddings with full approach")
 
@@ -506,7 +506,6 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
             workers=word2vec_n_workers,
             min_n=0, max_n=0,
             sg=1,
-            negative=negative,
             seed=seed
         )
 
@@ -520,7 +519,7 @@ def train_embeddings_streaming_approach(
     train_sources, train_targets, train_timestamps,
     batch_ts_size, sliding_window_duration, is_directed,
     walk_length, num_walks_per_node, edge_picker, embedding_dim,
-    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42, negative=10
+    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42
 ):
     """Train embeddings using a single incremental Word2Vec model (no EMA)."""
     logger.info("Training embeddings with streaming approach (incremental Word2Vec)")
@@ -585,7 +584,6 @@ def train_embeddings_streaming_approach(
                         workers=word2vec_n_workers,
                         min_n=0, max_n=0,
                         sg=1,
-                        negative=negative,
                         seed=seed
                     )
                     ft_model.build_vocab(clean_walks)
