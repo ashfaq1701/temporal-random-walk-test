@@ -504,6 +504,7 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
             window=10,
             min_count=1,
             workers=word2vec_n_workers,
+            min_n=0, max_n=0,
             sg=1,
             negative=negative,
             seed=seed
@@ -582,6 +583,7 @@ def train_embeddings_streaming_approach(
                         window=10,
                         min_count=1,
                         workers=word2vec_n_workers,
+                        min_n=0, max_n=0,
                         sg=1,
                         negative=negative,
                         seed=seed
@@ -590,10 +592,9 @@ def train_embeddings_streaming_approach(
                 else:
                     ft_model.build_vocab(clean_walks, update=True)
 
-                total_words = sum(len(s) for s in clean_walks)  # keep your current accounting
                 ft_model.train(
                     clean_walks,
-                    total_words=total_words,
+                    total_examples=len(clean_walks),
                     epochs=batch_epochs
                 )
 

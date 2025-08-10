@@ -589,10 +589,9 @@ def train_embeddings_streaming_approach(
                 else:
                     w2v_model.build_vocab(clean_walks, update=True)
 
-                total_words = sum(len(s) for s in clean_walks)
                 w2v_model.train(
                     clean_walks,
-                    total_words=total_words,
+                    total_examples=len(clean_walks),
                     epochs=batch_epochs
                 )
 
