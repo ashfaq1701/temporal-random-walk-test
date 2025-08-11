@@ -551,7 +551,6 @@ def train_embeddings_streaming_approach(
     logger.info(f"Processing {num_batches} batches with duration={batch_ts_size:,}")
 
     w2v = None
-    global_token_freq = Counter()
 
     def keep_existing_tokens(word, count, min_count):
         if w2v is not None and word in w2v.wv.key_to_index:
@@ -601,9 +600,6 @@ def train_embeddings_streaming_approach(
             logger.info("No valid walks in this batch; skipping.")
             continue
 
-        for path in clean_walks:
-            global_token_freq.update(path)
-
         try:
             with suppress_word2vec_output():
                 if w2v is None:
@@ -628,10 +624,6 @@ def train_embeddings_streaming_approach(
         except Exception as e:
             logger.error(f"Error processing batch {b + 1}: {e}")
             continue
-
-        if (b + 1) % max(1, num_batches // 10) == 0:
-            logger.info(f"Vocab size: {len(w2v.wv)}; "
-                        f"top token freq: {global_token_freq.most_common(1)[:1]}")
 
     if w2v is None:
         logger.warning("No batches produced walks; returning empty embedding store.")
