@@ -1081,7 +1081,7 @@ if __name__ == '__main__':
                         help='Number of batch epochs for incremental Word2Vec training')
     parser.add_argument('--streaming_replay_ratio', type=float, default=0.02,
                         help='Percentage of walks that will go to the replay buffer')
-    parser.add_argument('streaming_replay_buffer_capacity', type=int, default=1_000_000,
+    parser.add_argument('--streaming_replay_buffer_capacity', type=int, default=1_000_000,
                         help='Capacity of replay buffer')
     parser.add_argument('--output_path', type=str, default=None,
                         help='File path to save results (optional)')
