@@ -197,6 +197,8 @@ class LinkPredictionModel(nn.Module):
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
 
+        self.edge_norm = nn.LayerNorm(input_dim)
+
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
         self.dropout1 = nn.Dropout(0.2)
 
@@ -227,7 +229,9 @@ class LinkPredictionModel(nn.Module):
         else:
             raise ValueError(f"Unknown edge_op: {self.edge_op}")
 
-        x = F.relu(self.fc1(edge_features))
+        x = self.edge_norm(edge_features)
+
+        x = F.relu(self.fc1(x))
         x = self.dropout1(x)
 
         x = F.relu(self.fc2(x))
@@ -517,7 +521,7 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
         )
 
     node_embeddings = {int(node): model.wv[node] for node in model.wv.index_to_key}
-    node_embeddings = l2_normalize_rows(node_embeddings)
+    # node_embeddings = l2_normalize_rows(node_embeddings)
 
     logger.info(f'Trained embeddings for {len(node_embeddings)} nodes')
     return node_embeddings
@@ -613,7 +617,7 @@ def train_embeddings_streaming_approach(
         return {}
 
     node_embeddings = {int(k): w2v_model.wv[k] for k in w2v_model.wv.index_to_key}
-    node_embeddings = l2_normalize_rows(node_embeddings)  # <— normalize all at once
+    # node_embeddings = l2_normalize_rows(node_embeddings)  # <— normalize all at once
 
     logger.info(f"Streaming completed. Final embedding store: {len(node_embeddings)} nodes")
     return node_embeddings
