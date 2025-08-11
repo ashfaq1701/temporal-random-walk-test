@@ -445,6 +445,14 @@ def predict_with_model(model,
     return all_predictions
 
 
+def l2_normalize_rows(emb_dict):
+    out = {}
+    for k, v in emb_dict.items():
+        n = np.linalg.norm(v)
+        out[k] = (v / (n + 1e-12)).astype(np.float32)
+    return out
+
+
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
                                    is_directed, walk_length, num_walks_per_node, edge_picker,
                                    embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
@@ -509,6 +517,7 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
         )
 
     node_embeddings = {int(node): model.wv[node] for node in model.wv.index_to_key}
+    node_embeddings = l2_normalize_rows(node_embeddings)
 
     logger.info(f'Trained embeddings for {len(node_embeddings)} nodes')
     return node_embeddings
@@ -588,9 +597,10 @@ def train_embeddings_streaming_approach(
                 else:
                     w2v_model.build_vocab(clean_walks, update=True)
 
+                total_words = sum(len(s) for s in clean_walks)
                 w2v_model.train(
                     clean_walks,
-                    total_examples=len(clean_walks),
+                    total_words=total_words,
                     epochs=batch_epochs
                 )
 
@@ -603,6 +613,7 @@ def train_embeddings_streaming_approach(
         return {}
 
     node_embeddings = {int(k): w2v_model.wv[k] for k in w2v_model.wv.index_to_key}
+    node_embeddings = l2_normalize_rows(node_embeddings)  # <— normalize all at once
 
     logger.info(f"Streaming completed. Final embedding store: {len(node_embeddings)} nodes")
     return node_embeddings
