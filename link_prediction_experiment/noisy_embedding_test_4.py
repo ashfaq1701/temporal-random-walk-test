@@ -634,27 +634,17 @@ def train_embeddings_streaming_approach(
     return node_embeddings
 
 
-def get_embedding_tensor(embedding_dict, max_node_id, device="cpu", seed=42):
-    if not embedding_dict:
-        raise ValueError("embedding_dict is empty; no embeddings available.")
-
+def get_embedding_tensor(embedding_dict, max_node_id):
     embedding_dim = len(next(iter(embedding_dict.values())))
-    emb = torch.zeros((max_node_id + 1, embedding_dim), dtype=torch.float32, device=device)
-    has_vec = torch.zeros(max_node_id + 1, dtype=torch.bool, device=device)
+    embedding_matrix = torch.zeros((max_node_id + 1, embedding_dim), dtype=torch.float32)
 
-    for nid, vec in embedding_dict.items():
-        if 0 <= nid <= max_node_id:
-            emb[nid] = torch.tensor(vec, dtype=torch.float32, device=device)
-            has_vec[nid] = True
+    nodes_filled = 0
+    for node_id, embedding in embedding_dict.items():
+        if node_id <= max_node_id:
+            embedding_matrix[node_id] = torch.tensor(embedding, dtype=torch.float32)
+            nodes_filled += 1
 
-    missing = ~has_vec
-    if missing.any():
-        g = torch.Generator(device=device).manual_seed(seed)
-        rnd = torch.randn((missing.sum().item(), embedding_dim), generator=g, device=device)
-        rnd = F.normalize(rnd, p=2, dim=1)
-        emb[missing] = rnd
-
-    return emb
+    return embedding_matrix
 
 
 def compute_mrr(pred_proba, labels, negative_edges_per_positive):
