@@ -14,8 +14,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from gensim.models import Word2Vec
-from collections import Counter
-from gensim import utils
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset
@@ -199,8 +197,6 @@ class LinkPredictionModel(nn.Module):
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
 
-        self.edge_norm = nn.LayerNorm(input_dim)
-
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
         self.dropout1 = nn.Dropout(0.2)
 
@@ -231,9 +227,7 @@ class LinkPredictionModel(nn.Module):
         else:
             raise ValueError(f"Unknown edge_op: {self.edge_op}")
 
-        x = self.edge_norm(edge_features)
-
-        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc1(edge_features))
         x = self.dropout1(x)
 
         x = F.relu(self.fc2(x))
@@ -461,7 +455,7 @@ def l2_normalize_rows(emb_dict):
 
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
                                    is_directed, walk_length, num_walks_per_node, edge_picker,
-                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42, sample=0.0):
+                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
     """Train embeddings using full dataset approach."""
     logger.info("Training embeddings with full approach")
 
@@ -517,14 +511,13 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
             vector_size=embedding_dim,
             window=10,
             min_count=1,
-            sample=sample,
             workers=word2vec_n_workers,
             sg=1,
             seed=seed
         )
 
     node_embeddings = {int(node): model.wv[node] for node in model.wv.index_to_key}
-    node_embeddings = l2_normalize_rows(node_embeddings)
+    # node_embeddings = l2_normalize_rows(node_embeddings)
 
     logger.info(f'Trained embeddings for {len(node_embeddings)} nodes')
     return node_embeddings
@@ -534,14 +527,13 @@ def train_embeddings_streaming_approach(
     train_sources, train_targets, train_timestamps,
     batch_ts_size, sliding_window_duration, is_directed,
     walk_length, num_walks_per_node, edge_picker, embedding_dim,
-    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42, sample=0.0
+    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42
 ):
-    logger.info("Training embeddings with streaming Word2Vec (incremental)")
+    """Train embeddings using a single incremental Word2Vec model (no EMA)."""
+    logger.info("Training embeddings with streaming approach (incremental Word2Vec)")
 
     temporal_random_walk = TemporalRandomWalk(
-        is_directed=is_directed,
-        use_gpu=walk_use_gpu,
-        max_time_capacity=sliding_window_duration
+        is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=sliding_window_duration
     )
 
     min_ts = int(np.min(train_timestamps))
@@ -550,86 +542,79 @@ def train_embeddings_streaming_approach(
     num_batches = int(np.ceil(total_range / batch_ts_size))
     logger.info(f"Processing {num_batches} batches with duration={batch_ts_size:,}")
 
-    w2v = None
+    w2v_model = None
 
-    def keep_existing_tokens(word, count, min_count):
-        if w2v is not None and word in w2v.wv.key_to_index:
-            return utils.RULE_KEEP
-        return None
+    for batch_idx in range(num_batches):
+        batch_start_ts = min_ts + batch_idx * batch_ts_size
+        batch_end_ts = min_ts + (batch_idx + 1) * batch_ts_size
+        if batch_idx == num_batches - 1:
+            batch_end_ts = max_ts + 1
 
-    for b in range(num_batches):
-        b_start = min_ts + b * batch_ts_size
-        b_end   = min_ts + (b + 1) * batch_ts_size
-        if b == num_batches - 1:
-            b_end = max_ts + 1
-
-        mask = (train_timestamps >= b_start) & (train_timestamps < b_end)
+        mask = (train_timestamps >= batch_start_ts) & (train_timestamps < batch_end_ts)
         b_src = train_sources[mask]
         b_tgt = train_targets[mask]
-        b_ts  = train_timestamps[mask]
+        b_ts = train_timestamps[mask]
         if len(b_src) == 0:
             continue
 
-        logger.info(f"Batch {b + 1}/{num_batches}: {len(b_src):,} edges [{b_start}, {b_end})")
+        logger.info(f"Batch {batch_idx + 1}/{num_batches}: {len(b_src):,} edges [{batch_start_ts}, {batch_end_ts})")
 
         temporal_random_walk.add_multiple_edges(b_src, b_tgt, b_ts)
 
         walks_f, _, lens_f = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
-            max_walk_len=walk_length,
-            num_walks_per_node=num_walks_per_node // 2,
-            walk_bias=edge_picker,
-            initial_edge_bias='Uniform',
-            walk_direction="Forward_In_Time"
+            max_walk_len=walk_length, num_walks_per_node=num_walks_per_node // 2,
+            walk_bias=edge_picker, initial_edge_bias='Uniform', walk_direction="Forward_In_Time"
         )
         walks_b, _, lens_b = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
-            max_walk_len=walk_length,
-            num_walks_per_node=num_walks_per_node // 2,
-            walk_bias=edge_picker,
-            initial_edge_bias='Uniform',
-            walk_direction="Backward_In_Time"
+            max_walk_len=walk_length, num_walks_per_node=num_walks_per_node // 2,
+            walk_bias=edge_picker, initial_edge_bias='Uniform', walk_direction="Backward_In_Time"
         )
         walks = np.concatenate([walks_f, walks_b], axis=0)
-        lens  = np.concatenate([lens_f, lens_b], axis=0)
+        lens = np.concatenate([lens_f, lens_b], axis=0)
 
         clean_walks = []
         for w, L in zip(walks, lens):
             path = [str(n) for n in w[:L]]
             if len(path) > 1:
                 clean_walks.append(path)
+
         if not clean_walks:
             logger.info("No valid walks in this batch; skipping.")
             continue
 
         try:
             with suppress_word2vec_output():
-                if w2v is None:
-                    w2v = Word2Vec(
+                if w2v_model is None:
+                    w2v_model = Word2Vec(
                         vector_size=embedding_dim,
                         window=10,
                         min_count=1,
-                        sample=sample,
                         workers=word2vec_n_workers,
                         sg=1,
                         seed=seed
                     )
-                    w2v.build_vocab(clean_walks)
+                    w2v_model.build_vocab(clean_walks)
                 else:
-                    w2v.build_vocab(clean_walks, update=True, trim_rule=keep_existing_tokens)
+                    w2v_model.build_vocab(clean_walks, update=True)
 
-                w2v.train(
+                total_words = sum(len(s) for s in clean_walks)
+                w2v_model.train(
                     clean_walks,
-                    total_examples=len(clean_walks),
+                    total_words=total_words,
                     epochs=batch_epochs
                 )
+
         except Exception as e:
-            logger.error(f"Error processing batch {b + 1}: {e}")
+            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
             continue
 
-    if w2v is None:
+    if w2v_model is None:
         logger.warning("No batches produced walks; returning empty embedding store.")
         return {}
 
-    node_embeddings = {int(k): w2v.wv[k] for k in w2v.wv.index_to_key}
+    node_embeddings = {int(k): w2v_model.wv[k] for k in w2v_model.wv.index_to_key}
+    # node_embeddings = l2_normalize_rows(node_embeddings)  # <— normalize all at once
+
     logger.info(f"Streaming completed. Final embedding store: {len(node_embeddings)} nodes")
     return node_embeddings
 

@@ -5,6 +5,7 @@ import os
 import pickle
 import warnings
 from contextlib import contextmanager
+from itertools import islice, chain
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from gensim.models import Word2Vec
-from collections import Counter
+from collections import Counter, deque
 from gensim import utils
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
@@ -534,7 +535,8 @@ def train_embeddings_streaming_approach(
     train_sources, train_targets, train_timestamps,
     batch_ts_size, sliding_window_duration, is_directed,
     walk_length, num_walks_per_node, edge_picker, embedding_dim,
-    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42, sample=0.0
+    walk_use_gpu, word2vec_n_workers, batch_epochs, replay_ratio,
+    replay_buffer_capacity, seed=42, sample=0.0
 ):
     logger.info("Training embeddings with streaming Word2Vec (incremental)")
 
@@ -551,6 +553,7 @@ def train_embeddings_streaming_approach(
     logger.info(f"Processing {num_batches} batches with duration={batch_ts_size:,}")
 
     w2v = None
+    replay_buf = deque(maxlen=replay_buffer_capacity)
 
     def keep_existing_tokens(word, count, min_count):
         if w2v is not None and word in w2v.wv.key_to_index:
@@ -616,11 +619,19 @@ def train_embeddings_streaming_approach(
                 else:
                     w2v.build_vocab(clean_walks, update=True, trim_rule=keep_existing_tokens)
 
-                w2v.train(
-                    clean_walks,
-                    total_examples=len(clean_walks),
-                    epochs=batch_epochs
-                )
+                n_replay = int(replay_ratio * len(clean_walks))
+
+                replay_sample = random.sample(replay_buf, min(n_replay, len(replay_buf))) if (
+                            n_replay > 0 and len(replay_buf) > 0) else []
+                train_iter = chain(replay_sample, clean_walks)
+                total_examples = len(replay_sample) + len(clean_walks)
+
+                w2v.train(train_iter, total_examples=total_examples, epochs=batch_epochs)
+
+                # add random subset of current walks into buffer
+                if n_replay > 0 and clean_walks:
+                    for sent in random.sample(clean_walks, min(n_replay, len(clean_walks))):
+                        replay_buf.append(sent)
         except Exception as e:
             logger.error(f"Error processing batch {b + 1}: {e}")
             continue
@@ -768,6 +779,8 @@ def run_link_prediction_experiments(
         num_noise_steps,
         word2vec_n_workers,
         word2vec_batch_epochs,
+        streaming_replay_ratio,
+        streaming_replay_buffer_capacity,
         output_path
 ):
     logger.info("Starting link prediction experiments")
@@ -880,7 +893,9 @@ def run_link_prediction_experiments(
             embedding_dim=embedding_dim,
             walk_use_gpu=incremental_embedding_use_gpu,
             word2vec_n_workers=word2vec_n_workers,
-            batch_epochs=word2vec_batch_epochs
+            batch_epochs=word2vec_batch_epochs,
+            replay_ratio=streaming_replay_ratio,
+            replay_buffer_capacity=streaming_replay_buffer_capacity
         )
 
         device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
@@ -1046,6 +1061,10 @@ if __name__ == '__main__':
                         help='Number of workers for Word2Vec training')
     parser.add_argument('--word2vec_batch_epochs', type=int, default=3,
                         help='Number of batch epochs for incremental Word2Vec training')
+    parser.add_argument('--streaming_replay_ratio', type=float, default=0.02,
+                        help='Percentage of walks that will go to the replay buffer')
+    parser.add_argument('--streaming_replay_buffer_capacity', type=int, default=1_000_000,
+                        help='Capacity of replay buffer')
     parser.add_argument('--output_path', type=str, default=None,
                         help='File path to save results (optional)')
 
@@ -1073,5 +1092,7 @@ if __name__ == '__main__':
         num_noise_steps=args.num_noise_steps,
         word2vec_n_workers=args.word2vec_n_workers,
         word2vec_batch_epochs=args.word2vec_batch_epochs,
+        streaming_replay_ratio=args.streaming_replay_ratio,
+        streaming_replay_buffer_capacity=args.streaming_replay_buffer_capacity,
         output_path=args.output_path
     )
