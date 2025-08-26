@@ -68,8 +68,6 @@ def process_edges(raw_data_dir, logger):
                 if len(edges) == initial_edge_count:
                     file_no_edge_count += 1
                     total_no_edge_tweets += 1
-                    # Print the whole tweet object
-                    logger.info(f"No edges from tweet - Full object: {json.dumps(tweet, indent=2)}")
 
             logger.info(
                 f"File {file_idx}: {file_tweet_count} tweets, {file_mention_count} mentions, {file_reply_count} replies, {file_no_edge_count} no-edge tweets")
