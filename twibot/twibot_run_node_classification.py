@@ -4,15 +4,45 @@ import os
 import pickle
 
 import math
+import warnings
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from contextlib import contextmanager
 from gensim.models import Word2Vec
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+
+
+@contextmanager
+def suppress_word2vec_output():
+    """Context manager to suppress Word2Vec verbose output."""
+    gensim_logger = logging.getLogger('gensim')
+    word2vec_logger = logging.getLogger('gensim.models.word2vec')
+    kv_logger = logging.getLogger('gensim.models.keyedvectors')
+
+    original_gensim_level = gensim_logger.level
+    original_word2vec_level = word2vec_logger.level
+    original_kv_level = kv_logger.level
+
+    try:
+        # Suppress logging
+        gensim_logger.setLevel(logging.ERROR)
+        word2vec_logger.setLevel(logging.ERROR)
+        kv_logger.setLevel(logging.ERROR)
+
+        # Also suppress warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            yield
+    finally:
+        # Restore original levels
+        gensim_logger.setLevel(original_gensim_level)
+        word2vec_logger.setLevel(original_word2vec_level)
+        kv_logger.setLevel(original_kv_level)
 
 
 def setup_logging():
@@ -318,14 +348,15 @@ def train_streaming_embeddings(edges, batch_ts_size, sliding_window_duration, em
         if not clean:
             continue
 
-        if w2v is None:
-            w2v = Word2Vec(vector_size=embedding_dim, window=10, min_count=1,
-                           workers=w2v_workers, sg=1, seed=42)
-            w2v.build_vocab(clean)
-            w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
-        else:
-            w2v.build_vocab(clean, update=True)
-            w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
+        with suppress_word2vec_output():
+            if w2v is None:
+                w2v = Word2Vec(vector_size=embedding_dim, window=10, min_count=1,
+                               workers=w2v_workers, sg=1, seed=42)
+                w2v.build_vocab(clean)
+                w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
+            else:
+                w2v.build_vocab(clean, update=True)
+                w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
 
         total_walks += len(clean)
 
