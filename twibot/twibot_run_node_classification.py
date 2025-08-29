@@ -202,7 +202,15 @@ def train_bot_detection_model(
     model = BotPredictionModel(emb_tensor).to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss_fn = nn.BCEWithLogitsLoss()
+
+    pos = int(train_labels.sum())
+    neg = int(len(train_labels) - pos)
+    logger.info(
+        f"Class balance — train: pos={pos} ({pos / len(train_labels):.2%}), neg={neg} ({neg / len(train_labels):.2%})")
+
+    pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
     stopper = EarlyStopping(mode="max", patience=5)
 
     def _mk_loader(ids, y, bs=8192, train=False):
@@ -472,3 +480,6 @@ if __name__ == "__main__":
         args.link_prediction_use_gpu,
         logger
     )
+
+
+
