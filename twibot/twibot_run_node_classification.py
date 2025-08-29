@@ -322,10 +322,10 @@ def train_streaming_embeddings(edges, batch_ts_size, sliding_window_duration, em
             w2v = Word2Vec(vector_size=embedding_dim, window=10, min_count=1,
                            workers=w2v_workers, sg=1, seed=42)
             w2v.build_vocab(clean)
-            w2v.train(clean, total_examples=len(clean))
+            w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
         else:
             w2v.build_vocab(clean, update=True)
-            w2v.train(clean, total_examples=len(clean))
+            w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
 
         total_walks += len(clean)
 
