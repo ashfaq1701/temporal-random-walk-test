@@ -428,7 +428,7 @@ if __name__ == "__main__":
     parser.add_argument('--link_prediction_use_gpu', action='store_true',
                         help='Enable GPU acceleration for link prediction neural network')
 
-    parser.add_argument('--n_runs', type=int, default=3, help='Number of runs')
+    parser.add_argument('--n_runs', type=int, default=5, help='Number of runs')
 
     args = parser.parse_args()
 
