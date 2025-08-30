@@ -131,19 +131,27 @@ class BotDetectionModel(nn.Module):
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
 
         input_dim = node_embeddings_tensor.shape[1]
-        hidden_dim1 = max(64, input_dim // 2)
-        hidden_dim2 = max(32, input_dim // 4)
+        hidden_dim1 = max(256, input_dim)
+        hidden_dim2 = max(128, input_dim // 2)
+        hidden_dim3 = max(64, input_dim // 4)
+
+        self.bn1 = nn.BatchNorm1d(hidden_dim1)
+        self.bn2 = nn.BatchNorm1d(hidden_dim2)
+        self.bn3 = nn.BatchNorm1d(hidden_dim3)
 
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
-        self.dropout1 = nn.Dropout(0.2)
+        self.dropout1 = nn.Dropout(0.3)
 
         self.fc2 = nn.Linear(hidden_dim1, hidden_dim2)
-        self.dropout2 = nn.Dropout(0.2)
+        self.dropout2 = nn.Dropout(0.3)
 
-        self.fc3 = nn.Linear(hidden_dim2, 16)
-        self.dropout3 = nn.Dropout(0.1)
+        self.fc3 = nn.Linear(hidden_dim2, hidden_dim3)
+        self.dropout3 = nn.Dropout(0.2)
 
-        self.fc_out = nn.Linear(16, 1)
+        self.fc4 = nn.Linear(hidden_dim3, 32)
+        self.dropout4 = nn.Dropout(0.1)
+
+        self.fc_out = nn.Linear(32, 1)
 
     def forward(self, nodes):
         device = next(self.parameters()).device
@@ -151,14 +159,17 @@ class BotDetectionModel(nn.Module):
 
         node_emb = self.embedding_lookup(nodes)
 
-        x = F.relu(self.fc1(node_emb))
+        x = F.relu(self.bn1(self.fc1(node_emb)))
         x = self.dropout1(x)
 
-        x = F.relu(self.fc2(x))
+        x = F.relu(self.bn2(self.fc2(x)))
         x = self.dropout2(x)
 
-        x = F.relu(self.fc3(x))
+        x = F.relu(self.bn3(self.fc3(x)))
         x = self.dropout3(x)
+
+        x = F.relu(self.fc4(x))
+        x = self.dropout4(x)
 
         return self.fc_out(x)
 
@@ -173,10 +184,9 @@ def train_bot_detection_model(model,
                               patience=5):
     logger.info(f"Training bot detection model on {len(X_train):,} samples with batch size {batch_size:,}")
 
-    # Move model to device
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
     # Calculate class imbalance for weighted loss
     pos = int(y_train.sum())
@@ -185,6 +195,9 @@ def train_bot_detection_model(model,
 
     pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=3, factor=0.5, verbose=True)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
@@ -206,7 +219,6 @@ def train_bot_detection_model(model,
         prefetch_factor=4
     )
 
-    # Use larger batch size for validation to reduce overhead
     val_batch_size = batch_size * 4
     val_loader = DataLoader(
         TensorDataset(X_val_tensor, y_val_tensor),
@@ -241,6 +253,10 @@ def train_bot_detection_model(model,
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
             loss.backward()
+
+            # Add gradient clipping for training stability
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
             total_train_loss += loss.item()
@@ -284,6 +300,9 @@ def train_bot_detection_model(model,
 
         train_auc = roc_auc_score(all_train_targets, all_train_preds)
         val_auc = roc_auc_score(all_val_targets, all_val_preds)
+
+        # Step the scheduler
+        scheduler.step(val_auc)
 
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
