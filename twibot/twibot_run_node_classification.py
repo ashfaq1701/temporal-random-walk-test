@@ -366,6 +366,77 @@ def predict_with_model(model, X_test, batch_size, device='cpu'):
     return all_predictions
 
 
+def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
+                                  is_directed, walk_length, num_walks_per_node, edge_picker,
+                                  embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
+   """Train embeddings using full dataset approach."""
+   logger.info("Training embeddings with full approach")
+
+   temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=-1)
+   temporal_random_walk.add_multiple_edges(train_sources, train_targets, train_timestamps)
+
+   logger.info(
+       f'Generating forward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
+   # Generate forward walks
+   walks_forward, _, walk_lengths_forward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+       max_walk_len=walk_length,
+       num_walks_per_node=num_walks_per_node // 2,
+       walk_bias=edge_picker,
+       initial_edge_bias='Uniform',
+       walk_direction="Forward_In_Time"
+   )
+
+   logger.info(
+       f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}')
+
+   logger.info(
+       f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
+
+   # Generate backward walks
+   walks_backward, _, walk_lengths_backward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+       max_walk_len=walk_length,
+       num_walks_per_node=num_walks_per_node // 2,
+       walk_bias=edge_picker,
+       initial_edge_bias='Uniform',
+       walk_direction="Backward_In_Time"
+   )
+
+   logger.info(
+       f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}')
+
+   # Combine walks
+   walks = np.concatenate([walks_forward, walks_backward], axis=0)
+   walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
+
+   logger.info(f'Generated {len(walks)} walks in total. Mean length: {np.mean(walk_lengths):.2f}')
+
+   # Clean walks
+   clean_walks = []
+   for walk, length in zip(walks, walk_lengths):
+       clean_walk = [str(node) for node in walk[:length]]
+       if len(clean_walk) > 1:
+           clean_walks.append(clean_walk)
+
+   # Train Word2Vec
+   logger.info(f"Training Word2Vec on {len(clean_walks)} walks")
+   with suppress_word2vec_output():
+       model = Word2Vec(
+           sentences=clean_walks,
+           vector_size=embedding_dim,
+           window=10,
+           min_count=1,
+           workers=word2vec_n_workers,
+           sg=1,
+           seed=seed
+       )
+
+   node_embeddings = {int(node): model.wv[node] for node in model.wv.index_to_key}
+
+   logger.info(f'Trained embeddings for {len(node_embeddings)} nodes')
+   return node_embeddings
+
+
 def train_embeddings_streaming_approach(
         train_sources, train_targets, train_timestamps,
         batch_ts_size, sliding_window_duration, is_directed,
@@ -524,6 +595,7 @@ def run_bot_detection_experiments(
         is_directed,
         batch_ts_size,
         sliding_window_duration,
+        embedding_mode,
         walk_length,
         num_walks_per_node,
         edge_picker,
@@ -558,21 +630,34 @@ def run_bot_detection_experiments(
     logger.info("Computing embeddings with streaming approach...")
     logger.info("=" * 60)
 
-    streaming_embeddings = train_embeddings_streaming_approach(
-        train_sources=train_sources,
-        train_targets=train_targets,
-        train_timestamps=train_timestamps,
-        batch_ts_size=batch_ts_size,
-        sliding_window_duration=sliding_window_duration,
-        is_directed=is_directed,
-        walk_length=walk_length,
-        num_walks_per_node=num_walks_per_node,
-        edge_picker=edge_picker,
-        embedding_dim=embedding_dim,
-        walk_use_gpu=streaming_embedding_use_gpu,
-        word2vec_n_workers=word2vec_n_workers,
-        batch_epochs=word2vec_batch_epochs
-    )
+    if embedding_mode == 'streaming':
+        embeddings = train_embeddings_streaming_approach(
+            train_sources=train_sources,
+            train_targets=train_targets,
+            train_timestamps=train_timestamps,
+            batch_ts_size=batch_ts_size,
+            sliding_window_duration=sliding_window_duration,
+            is_directed=is_directed,
+            walk_length=walk_length,
+            num_walks_per_node=num_walks_per_node,
+            edge_picker=edge_picker,
+            embedding_dim=embedding_dim,
+            walk_use_gpu=streaming_embedding_use_gpu,
+            word2vec_n_workers=word2vec_n_workers,
+            batch_epochs=word2vec_batch_epochs
+        )
+    else:
+        train_embeddings_full_approach(
+            train_sources=train_sources,
+            train_targets=train_targets,
+            train_timestamps=train_timestamps,
+            is_directed=is_directed,
+            walk_length=walk_length,
+            num_walks_per_node=num_walks_per_node,
+            edge_picker=edge_picker,
+            embedding_dim=embedding_dim,
+            walk_use_gpu=streaming_embedding_use_gpu,
+            word2vec_n_workers=word2vec_n_workers)
 
     device = 'cuda' if bot_detection_use_gpu and torch.cuda.is_available() else 'cpu'
     streaming_results = {}
@@ -591,7 +676,7 @@ def run_bot_detection_experiments(
             val_labels=val_labels,
             test_ids=test_ids,
             test_labels=test_labels,
-            embedding_tensor=get_embedding_tensor(streaming_embeddings, max_node_id),
+            embedding_tensor=get_embedding_tensor(embeddings, max_node_id),
             n_epochs=n_epochs,
             batch_size=batch_size,
             device=device
@@ -635,6 +720,9 @@ if __name__ == '__main__':
     parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True,
                         help='Whether the graph is directed (true/false)')
 
+    parser.add_argument('--embedding_mode', type=str, default='streaming',
+                        help='Embedding mode - streaming or full')
+
     # Model parameters
     parser.add_argument('--walk_length', type=int, default=100,
                         help='Maximum length of random walks')
@@ -675,6 +763,7 @@ if __name__ == '__main__':
         is_directed=args.is_directed,
         batch_ts_size=args.batch_ts_size,
         sliding_window_duration=args.sliding_window_duration,
+        embedding_mode=args.embedding_mode,
         walk_length=args.walk_length,
         num_walks_per_node=args.num_walks_per_node,
         edge_picker=args.edge_picker,
