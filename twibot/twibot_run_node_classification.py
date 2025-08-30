@@ -1,20 +1,30 @@
 import argparse
 import logging
+import random
 import os
 import pickle
-
-import math
 import warnings
+from contextlib import contextmanager
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from contextlib import contextmanager
+import torch.optim as optim
 from gensim.models import Word2Vec
-from temporal_random_walk import TemporalRandomWalk
-from torch.utils.data import TensorDataset, DataLoader
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+from temporal_random_walk import TemporalRandomWalk
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+random.seed(42);
+np.random.seed(42);
+torch.manual_seed(42)
 
 
 @contextmanager
@@ -29,79 +39,50 @@ def suppress_word2vec_output():
     original_kv_level = kv_logger.level
 
     try:
-        # Suppress logging
         gensim_logger.setLevel(logging.ERROR)
         word2vec_logger.setLevel(logging.ERROR)
         kv_logger.setLevel(logging.ERROR)
 
-        # Also suppress warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             yield
     finally:
-        # Restore original levels
         gensim_logger.setLevel(original_gensim_level)
         word2vec_logger.setLevel(original_word2vec_level)
         kv_logger.setLevel(original_kv_level)
 
 
-def setup_logging():
-    """Setup logging configuration"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('data_processing.log')
-        ]
-    )
-    return logging.getLogger(__name__)
+def load_edges_and_labels(data_dir):
+    """Load edges and label data from directory."""
+    logger.info(f"Loading dataset from {data_dir}")
 
+    # Load edges
+    edges_path = os.path.join(data_dir, 'edges.csv')
+    edges_df = pd.read_csv(edges_path)
+    edges_df = edges_df[["u", "i", "ts"]].copy()
+    edges_df = edges_df.dropna().astype({"u": np.int32, "i": np.int32, "ts": np.int64})
+    logger.info(f"Loaded edges: {len(edges_df):,} rows")
 
-def _load_edges(data_path, logger):
-    edges_path = os.path.join(data_path, 'edges.csv')
-    df = pd.read_csv(edges_path)
-    df = df[["u", "i", "ts"]].copy()
-    df = df.dropna().astype({"u": np.int32, "i": np.int32, "ts": np.int64})
-    logger.info(f"Loaded edges: {len(df):,} rows")
-    return df
-
-
-def _load_labelled_splits(data_path, logger):
-    labels = pd.read_csv(os.path.join(data_path, 'labels.csv'), usecols=['id', 'label'])
+    # Load labels
+    labels = pd.read_csv(os.path.join(data_dir, 'labels.csv'), usecols=['id', 'label'])
     labels_dict = {int(i): (1 if lbl == 'bot' else 0) for i, lbl in zip(labels['id'], labels['label'])}
 
-    split = pd.read_csv(os.path.join(data_path, 'split.csv'), usecols=['id', 'split'])
+    # Load splits
+    split = pd.read_csv(os.path.join(data_dir, 'split.csv'), usecols=['id', 'split'])
 
-    def pack(name: str):
+    def pack_split(name: str):
         ids_all = split.loc[split['split'] == name, 'id'].astype(int).to_numpy()
         ids = [i for i in ids_all if i in labels_dict]
         y = [labels_dict[i] for i in ids]
         return np.array(ids, dtype=np.int32), np.array(y, dtype=np.int32)
 
-    train_ids, train_y = pack('train')
-    val_ids,   val_y   = pack('val')
-    test_ids,  test_y  = pack('test')
+    train_ids, train_y = pack_split('train')
+    val_ids, val_y = pack_split('val')
+    test_ids, test_y = pack_split('test')
 
     logger.info(f"train={len(train_ids):,}, val={len(val_ids):,}, test={len(test_ids):,}")
-    return train_ids, train_y, val_ids, val_y, test_ids, test_y
 
-
-def _embedding_tensor_from_store(embedding_store, required_max_id, logger):
-    if not embedding_store:
-        raise RuntimeError("Empty embedding_store")
-
-    emb_dim = len(next(iter(embedding_store.values())))
-    size = int(required_max_id) + 1
-    mat = torch.zeros((size, emb_dim), dtype=torch.float32)
-
-    filled = 0
-    for nid, vec in embedding_store.items():
-        if nid < size:
-            mat[nid] = torch.from_numpy(vec)
-            filled += 1
-    logger.info(f"Embedding tensor: shape={tuple(mat.shape)}, rows_filled={filled:,}")
-    return mat
+    return edges_df, train_ids, train_y, val_ids, val_y, test_ids, test_y
 
 
 class EarlyStopping:
@@ -126,7 +107,7 @@ class EarlyStopping:
 
     def __call__(self, current_score, model):
         improved = (current_score < self.best_score - self.min_delta) if self.mode == 'min' else (
-                    current_score > self.best_score + self.min_delta)
+                current_score > self.best_score + self.min_delta)
 
         if improved:
             self.best_score = current_score
@@ -143,7 +124,7 @@ class EarlyStopping:
         return False
 
 
-class BotPredictionModel(nn.Module):
+class BotDetectionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor):
         super().__init__()
 
@@ -182,304 +163,528 @@ class BotPredictionModel(nn.Module):
         return self.fc_out(x)
 
 
-def train_bot_detection_model(
-    train_ids, train_labels,
-    val_ids, val_labels,
-    test_ids, test_labels,
-    embedding_store, link_prediction_use_gpu,
-    logger
-):
-    device = "cuda" if (link_prediction_use_gpu and torch.cuda.is_available()) else "cpu"
+def train_bot_detection_model(model,
+                              X_train, y_train,
+                              X_val, y_val,
+                              batch_size,
+                              learning_rate=0.001,
+                              epochs=20,
+                              device='cpu',
+                              patience=5):
+    logger.info(f"Training bot detection model on {len(X_train):,} samples with batch size {batch_size:,}")
 
-    required_max_id = int(max(
-        max(train_ids, default=0),
-        max(val_ids, default=0),
-        max(test_ids, default=0),
-        max(embedding_store.keys(), default=0)
-    ))
+    # Move model to device
+    model = model.to(device)
 
-    emb_tensor = _embedding_tensor_from_store(embedding_store, required_max_id, logger)
-    model = BotPredictionModel(emb_tensor).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-
-    pos = int(train_labels.sum())
-    neg = int(len(train_labels) - pos)
-    logger.info(
-        f"Class balance — train: pos={pos} ({pos / len(train_labels):.2%}), neg={neg} ({neg / len(train_labels):.2%})")
+    # Calculate class imbalance for weighted loss
+    pos = int(y_train.sum())
+    neg = int(len(y_train) - pos)
+    logger.info(f"Class balance — train: pos={pos} ({pos / len(y_train):.2%}), neg={neg} ({neg / len(y_train):.2%})")
 
     pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    stopper = EarlyStopping(mode="max", patience=5)
+    early_stopping = EarlyStopping(mode='max', patience=patience)
 
-    def _mk_loader(ids, y, bs=8192, train=False):
-        x = torch.tensor(ids, dtype=torch.long)
-        t = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
-        ds = TensorDataset(x, t)
-        return DataLoader(ds, batch_size=bs, shuffle=train)
+    X_train_tensor = torch.tensor(X_train, dtype=torch.long)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
 
-    train_loader = _mk_loader(train_ids, train_labels, train=True)
-    val_loader = _mk_loader(val_ids, val_labels)
-    test_loader = _mk_loader(test_ids, test_labels)
+    X_val_tensor = torch.tensor(X_val, dtype=torch.long)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
 
-    def _eval(loader):
-        model.eval()
-        ys, ps = [], []
-        with torch.no_grad():
-            for x, y in loader:
-                x = x.to(device);
-                y = y.to(device)
-                prob = torch.sigmoid(model(x))
-                ys.append(y.cpu().numpy())
-                ps.append(prob.cpu().numpy())
-        y = np.vstack(ys).ravel()
-        p = np.vstack(ps).ravel()
-        yhat = (p >= 0.5).astype(np.int32)
-        out = {
-            "accuracy": accuracy_score(y, yhat),
-            "precision": precision_score(y, yhat, zero_division=0),
-            "recall": recall_score(y, yhat, zero_division=0),
-            "f1": f1_score(y, yhat, zero_division=0),
-        }
-        if len(np.unique(y)) > 1:
-            out["auc"] = roc_auc_score(y, p)
-        return out
+    num_workers = min(8, os.cpu_count())
 
-    epochs = 20
-    for ep in range(epochs):
+    train_loader = DataLoader(
+        TensorDataset(X_train_tensor, y_train_tensor),
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=(device == 'cuda'),
+        num_workers=num_workers,
+        persistent_workers=True,
+        prefetch_factor=4
+    )
+
+    # Use larger batch size for validation to reduce overhead
+    val_batch_size = batch_size * 4
+    val_loader = DataLoader(
+        TensorDataset(X_val_tensor, y_val_tensor),
+        batch_size=val_batch_size,
+        shuffle=False,
+        pin_memory=(device == 'cuda'),
+        num_workers=num_workers,
+        persistent_workers=True,
+        prefetch_factor=4
+    )
+
+    logger.info(f"Training: {len(train_loader)} batches of {batch_size:,}")
+    logger.info(f"Validation: {len(val_loader)} batches of {val_batch_size:,}")
+
+    history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
+    epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
+
+    for epoch in epoch_pbar:
         model.train()
-        total = 0.0
-        for x, y in train_loader:
-            x = x.to(device);
-            y = y.to(device)
-            opt.zero_grad()
-            logits = model(x)
-            loss = loss_fn(logits, y)
+        total_train_loss = 0.0
+        train_preds_list = []
+        train_targets_list = []
+
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} - Train", leave=False, unit="batch")
+
+        for batch_x, batch_y in train_pbar:
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
+
+            optimizer.zero_grad()
+
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
             loss.backward()
-            opt.step()
-            total += float(loss.item())
+            optimizer.step()
 
-        val_metrics = _eval(val_loader)
-        msg = "  ".join(f"{k.upper()} {v:.4f}" for k, v in val_metrics.items())
-        logger.info(f"Epoch {ep + 1}/{epochs}  TrainLoss {total / len(train_loader):.4f}  |  VAL {msg}")
+            total_train_loss += loss.item()
 
-        monitor = val_metrics.get("auc", val_metrics["f1"])
-        if stopper(monitor, model):
-            logger.info(f"Early stopping at epoch {ep + 1}")
+            train_preds_list.append(torch.sigmoid(outputs).detach().float())
+            train_targets_list.append(batch_y.float())
+
+            train_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+
+        avg_train_loss = total_train_loss / len(train_loader)
+
+        model.eval()
+        total_val_loss = 0.0
+        val_preds_list = []
+        val_targets_list = []
+
+        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch + 1}/{epochs} - Val", leave=False, unit="batch")
+
+        with torch.no_grad():
+            for batch_x, batch_y in val_pbar:
+                batch_x = batch_x.to(device, non_blocking=True)
+                batch_y = batch_y.to(device, non_blocking=True)
+
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
+
+                total_val_loss += loss.item()
+
+                val_preds_list.append(torch.sigmoid(outputs).detach().float())
+                val_targets_list.append(batch_y.float())
+
+                val_pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+
+        avg_val_loss = total_val_loss / len(val_loader)
+
+        all_train_preds = torch.cat(train_preds_list, dim=0).cpu().numpy().flatten()
+        all_train_targets = torch.cat(train_targets_list, dim=0).cpu().numpy().flatten()
+
+        all_val_preds = torch.cat(val_preds_list, dim=0).cpu().numpy().flatten()
+        all_val_targets = torch.cat(val_targets_list, dim=0).cpu().numpy().flatten()
+
+        train_auc = roc_auc_score(all_train_targets, all_train_preds)
+        val_auc = roc_auc_score(all_val_targets, all_val_preds)
+
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(avg_val_loss)
+        history['train_auc'].append(train_auc)
+        history['val_auc'].append(val_auc)
+
+        epoch_pbar.set_postfix({
+            'train_loss': f'{avg_train_loss:.4f}',
+            'val_loss': f'{avg_val_loss:.4f}',
+            'train_auc': f'{train_auc:.4f}',
+            'val_auc': f'{val_auc:.4f}'
+        })
+
+        logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, "
+                    f"Val Loss: {avg_val_loss:.4f}, Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
+
+        if early_stopping(val_auc, model):
+            logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
-    test_metrics = _eval(test_loader)
-    logger.info("TEST  " + "  ".join(f"{k.upper()} {v:.4f}" for k, v in test_metrics.items()))
-    return test_metrics
+        del train_preds_list, train_targets_list, val_preds_list, val_targets_list
+        del all_train_preds, all_train_targets, all_val_preds, all_val_targets
+        if device == 'cuda':
+            torch.cuda.empty_cache()
+
+    epoch_pbar.close()
+    logger.info("Training completed")
+    return history
 
 
+def predict_with_model(model, X_test, batch_size, device='cpu'):
+    model = model.to(device)
+    model.eval()
 
+    logger.info(f"Making predictions on {len(X_test):,} samples with batch size {batch_size:,}")
 
-def train_streaming_embeddings(edges, batch_ts_size, sliding_window_duration, embedding_use_gpu, logger):
-    ts_min = int(edges["ts"].min())
-    ts_max = int(edges["ts"].max()) + 1  # half-open
-    num_batches = max(1, math.ceil((ts_max - ts_min) / int(batch_ts_size)))
+    X_test_tensor = torch.tensor(X_test, dtype=torch.long)
 
-    logger.info(
-        f"Streaming: batch_ts_size={batch_ts_size} sec (~{batch_ts_size / 86400:.2f} days), "
-        f"batches={num_batches}, window={sliding_window_duration} sec (~{sliding_window_duration / 86400:.2f} days)"
+    num_workers = min(8, os.cpu_count())
+
+    test_loader = DataLoader(
+        TensorDataset(X_test_tensor),
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=(device == 'cuda'),
+        num_workers=num_workers,
+        persistent_workers=True,
+        prefetch_factor=4
     )
 
-    trw = TemporalRandomWalk(
-        is_directed=True,
-        use_gpu=bool(embedding_use_gpu),
-        max_time_capacity=int(sliding_window_duration)
+    logger.info(f"Processing {len(test_loader)} batches")
+
+    predictions_list = []
+
+    prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
+
+    with torch.no_grad():
+        for (batch_x,) in prediction_pbar:
+            batch_x = batch_x.to(device, non_blocking=True)
+
+            logits = model(batch_x)
+            probs = torch.sigmoid(logits).detach().float()
+            predictions_list.append(probs)
+
+            prediction_pbar.set_postfix({
+                'batches_processed': len(predictions_list),
+                'batch_size': len(batch_x)
+            })
+
+    prediction_pbar.close()
+
+    logger.info("Transferring predictions to CPU...")
+    all_predictions = torch.cat(predictions_list, dim=0).cpu().numpy().flatten()
+
+    del predictions_list
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+
+    logger.info("Prediction completed")
+    return all_predictions
+
+
+def train_embeddings_streaming_approach(
+        train_sources, train_targets, train_timestamps,
+        batch_ts_size, sliding_window_duration, is_directed,
+        walk_length, num_walks_per_node, edge_picker, embedding_dim,
+        walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42
+):
+    """Train embeddings using streaming approach (incremental Word2Vec)."""
+    logger.info("Training embeddings with streaming approach")
+
+    temporal_random_walk = TemporalRandomWalk(
+        is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=sliding_window_duration
     )
 
-    walk_length = 100
-    num_walks_per_node = 10
-    edge_picker = "ExponentialIndex"
-    embedding_dim = 128
-    w2v_workers = max(1, min(16, os.cpu_count() or 4))
+    min_ts = int(np.min(train_timestamps))
+    max_ts = int(np.max(train_timestamps))
+    total_range = max_ts - min_ts
+    num_batches = int(np.ceil(total_range / batch_ts_size))
+    logger.info(f"Processing {num_batches} batches with duration={batch_ts_size:,}")
 
-    w2v = None
-    total_walks = 0
+    w2v_model = None
 
-    for b in range(num_batches):
-        start = ts_min + b * batch_ts_size
-        end = min(ts_min + (b + 1) * batch_ts_size, ts_max)
+    for batch_idx in range(num_batches):
+        batch_start_ts = min_ts + batch_idx * batch_ts_size
+        batch_end_ts = min_ts + (batch_idx + 1) * batch_ts_size
+        if batch_idx == num_batches - 1:
+            batch_end_ts = max_ts + 1
 
-        batch = edges[(edges.ts >= start) & (edges.ts < end)]
-        if batch.empty:
-            logger.info(f"Bucket {b + 1}/{num_batches}: 0 edges — skip")
+        mask = (train_timestamps >= batch_start_ts) & (train_timestamps < batch_end_ts)
+        b_src = train_sources[mask]
+        b_tgt = train_targets[mask]
+        b_ts = train_timestamps[mask]
+        if len(b_src) == 0:
             continue
 
-        trw.add_multiple_edges(
-            batch["u"].to_numpy(np.int32),
-            batch["i"].to_numpy(np.int32),
-            batch["ts"].to_numpy(np.int64),
-        )
+        logger.info(f"Batch {batch_idx + 1}/{num_batches}: {len(b_src):,} edges [{batch_start_ts}, {batch_end_ts})")
 
-        # Forward / backward walks
-        wf, _, lf = trw.get_random_walks_and_times_for_all_nodes(
-            max_walk_len=walk_length,
-            num_walks_per_node=max(1, num_walks_per_node // 2),
-            walk_bias=edge_picker,
-            initial_edge_bias="Uniform",
-            walk_direction="Forward_In_Time",
-        )
-        wb, _, lb = trw.get_random_walks_and_times_for_all_nodes(
-            max_walk_len=walk_length,
-            num_walks_per_node=num_walks_per_node - max(1, num_walks_per_node // 2),
-            walk_bias=edge_picker,
-            initial_edge_bias="Uniform",
-            walk_direction="Backward_In_Time",
-        )
+        temporal_random_walk.add_multiple_edges(b_src, b_tgt, b_ts)
 
-        # Avg walk lengths (forward/backward)
-        fwd_n = int(len(lf))
-        bwd_n = int(len(lb))
-        fwd_mean = float(np.mean(lf)) if fwd_n else 0.0
-        bwd_mean = float(np.mean(lb)) if bwd_n else 0.0
-        logger.info(
-            f"Bucket {b + 1}/{num_batches}: "
-            f"forward_walks={fwd_n}, avg_len={fwd_mean:.2f} | "
-            f"backward_walks={bwd_n}, avg_len={bwd_mean:.2f}"
+        walks_f, _, lens_f = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+            max_walk_len=walk_length, num_walks_per_node=num_walks_per_node // 2,
+            walk_bias=edge_picker, initial_edge_bias='Uniform', walk_direction="Forward_In_Time"
         )
+        walks_b, _, lens_b = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+            max_walk_len=walk_length, num_walks_per_node=num_walks_per_node // 2,
+            walk_bias=edge_picker, initial_edge_bias='Uniform', walk_direction="Backward_In_Time"
+        )
+        walks = np.concatenate([walks_f, walks_b], axis=0)
+        lens = np.concatenate([lens_f, lens_b], axis=0)
 
-        walks = np.concatenate([wf, wb], axis=0) if len(wf) else wb
-        lens = np.concatenate([lf, lb], axis=0) if len(lf) else lb
-
-        clean = []
+        clean_walks = []
         for w, L in zip(walks, lens):
-            L = int(L)
-            if L > 1:
-                clean.append([str(int(n)) for n in w[:L]])
+            path = [str(n) for n in w[:L]]
+            if len(path) > 1:
+                clean_walks.append(path)
 
-        logger.info(f"Bucket {b + 1}/{num_batches}: edges={len(batch):,}, walks={len(clean):,}")
-        if not clean:
+        if not clean_walks:
+            logger.info("No valid walks in this batch; skipping.")
             continue
 
-        with suppress_word2vec_output():
-            if w2v is None:
-                w2v = Word2Vec(vector_size=embedding_dim, window=10, min_count=1,
-                               workers=w2v_workers, sg=1, seed=42)
-                w2v.build_vocab(clean)
-                w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
-            else:
-                w2v.build_vocab(clean, update=True)
-                w2v.train(clean, total_examples=len(clean), epochs=w2v.epochs)
+        try:
+            with suppress_word2vec_output():
+                if w2v_model is None:
+                    w2v_model = Word2Vec(
+                        vector_size=embedding_dim,
+                        window=10,
+                        min_count=1,
+                        workers=word2vec_n_workers,
+                        sg=1,
+                        seed=seed
+                    )
+                    w2v_model.build_vocab(clean_walks)
+                else:
+                    w2v_model.build_vocab(clean_walks, update=True)
 
-        total_walks += len(clean)
+                total_words = sum(len(s) for s in clean_walks)
+                w2v_model.train(
+                    clean_walks,
+                    total_words=total_words,
+                    epochs=batch_epochs
+                )
 
-    if w2v is None:
-        logger.warning("No walks generated; returning empty embedding store.")
+        except Exception as e:
+            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+            continue
+
+    if w2v_model is None:
+        logger.warning("No batches produced walks; returning empty embedding store.")
         return {}
 
-    logger.info(f"Word2Vec trained over {total_walks:,} walks; vocab={len(w2v.wv):,}")
-    emb_store = {int(k): w2v.wv[k].astype(np.float32) for k in w2v.wv.index_to_key}
-    return emb_store
+    node_embeddings = {int(k): w2v_model.wv[k] for k in w2v_model.wv.index_to_key}
+
+    logger.info(f"Streaming completed. Final embedding store: {len(node_embeddings)} nodes")
+    return node_embeddings
 
 
-def run_bot_detection_pipeline_step(
-    batch_ts_size,
-    sliding_window_duration,
-    data_dir,
-    embedding_use_gpu,
-    link_prediction_use_gpu,
-    logger
+def get_embedding_tensor(embedding_dict, max_node_id):
+    embedding_dim = len(next(iter(embedding_dict.values())))
+    embedding_matrix = torch.zeros((max_node_id + 1, embedding_dim), dtype=torch.float32)
+
+    nodes_filled = 0
+    for node_id, embedding in embedding_dict.items():
+        if node_id <= max_node_id:
+            embedding_matrix[node_id] = torch.tensor(embedding, dtype=torch.float32)
+            nodes_filled += 1
+
+    logger.info(f"Embedding tensor: shape={tuple(embedding_matrix.shape)}, rows_filled={nodes_filled:,}")
+    return embedding_matrix
+
+
+def evaluate_bot_detection(
+        train_ids, train_labels,
+        val_ids, val_labels,
+        test_ids, test_labels,
+        embedding_tensor,
+        n_epochs, batch_size, device):
+    logger.info(
+        f"Bot detection train: {len(train_ids):,}, val: {len(val_ids):,}, test: {len(test_ids):,}")
+
+    model = BotDetectionModel(embedding_tensor).to(device)
+
+    history = train_bot_detection_model(
+        model,
+        train_ids, train_labels,
+        val_ids, val_labels,
+        batch_size=batch_size, epochs=n_epochs, device=device, patience=5
+    )
+
+    # Make predictions
+    logger.info("Making final predictions...")
+    test_pred_proba = predict_with_model(model, test_ids, batch_size=batch_size, device=device)
+
+    test_pred = (test_pred_proba > 0.5).astype(int)
+
+    # Calculate standard metrics for test set
+    test_auc = roc_auc_score(test_labels, test_pred_proba)
+    test_accuracy = accuracy_score(test_labels, test_pred)
+    test_precision = precision_score(test_labels, test_pred, zero_division=0)
+    test_recall = recall_score(test_labels, test_pred, zero_division=0)
+    test_f1 = f1_score(test_labels, test_pred, zero_division=0)
+
+    results = {
+        'auc': test_auc,
+        'accuracy': test_accuracy,
+        'precision': test_precision,
+        'recall': test_recall,
+        'f1_score': test_f1,
+        'training_history': history
+    }
+
+    logger.info(f"Bot detection completed - AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}, F1: {test_f1:.4f}")
+    return results
+
+
+def run_bot_detection_experiments(
+        data_dir,
+        is_directed,
+        batch_ts_size,
+        sliding_window_duration,
+        walk_length,
+        num_walks_per_node,
+        edge_picker,
+        embedding_dim,
+        n_epochs,
+        streaming_embedding_use_gpu,
+        bot_detection_use_gpu,
+        n_runs,
+        batch_size,
+        word2vec_n_workers,
+        word2vec_batch_epochs,
+        output_path
 ):
-    edges = _load_edges(data_dir, logger)
-    train_data, train_labels, val_data, val_labels, test_data, test_labels = _load_labelled_splits(data_dir, logger)
+    logger.info("Starting bot detection experiments")
 
-    embedding_store = train_streaming_embeddings(
-        edges=edges,
+    # Load data
+    edges_df, train_ids, train_labels, val_ids, val_labels, test_ids, test_labels = load_edges_and_labels(data_dir)
+
+    train_sources = edges_df['u'].to_numpy()
+    train_targets = edges_df['i'].to_numpy()
+    train_timestamps = edges_df['ts'].to_numpy()
+
+    all_node_ids = np.concatenate([
+        train_sources, train_targets,
+        train_ids, val_ids, test_ids
+    ])
+
+    max_node_id = int(all_node_ids.max())
+    logger.info(f"Maximum node ID in dataset: {max_node_id}")
+
+    logger.info("=" * 60)
+    logger.info("Computing embeddings with streaming approach...")
+    logger.info("=" * 60)
+
+    streaming_embeddings = train_embeddings_streaming_approach(
+        train_sources=train_sources,
+        train_targets=train_targets,
+        train_timestamps=train_timestamps,
         batch_ts_size=batch_ts_size,
         sliding_window_duration=sliding_window_duration,
-        embedding_use_gpu=embedding_use_gpu,
-        logger=logger
+        is_directed=is_directed,
+        walk_length=walk_length,
+        num_walks_per_node=num_walks_per_node,
+        edge_picker=edge_picker,
+        embedding_dim=embedding_dim,
+        walk_use_gpu=streaming_embedding_use_gpu,
+        word2vec_n_workers=word2vec_n_workers,
+        batch_epochs=word2vec_batch_epochs
     )
 
-    test_metrics = train_bot_detection_model(
-        train_ids=train_data, train_labels=train_labels,
-        val_ids=val_data, val_labels=val_labels,
-        test_ids=test_data, test_labels=test_labels,
-        embedding_store=embedding_store,
-        link_prediction_use_gpu=link_prediction_use_gpu,
-        logger=logger
-    )
-    return test_metrics
+    device = 'cuda' if bot_detection_use_gpu and torch.cuda.is_available() else 'cpu'
+    streaming_results = {}
 
-
-def run_bot_detection_pipeline(
-    batch_ts_size,
-    sliding_window_duration,
-    n_runs,
-    data_dir,
-    embedding_use_gpu,
-    link_prediction_use_gpu,
-    logger
-):
-    merged = {}
+    logger.info("=" * 60)
+    logger.info("TRAINING BOT DETECTION MODEL")
+    logger.info("=" * 60)
 
     for run in range(n_runs):
-        logger.info(f"Running {run + 1} / {n_runs}")
+        logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
-        metrics = run_bot_detection_pipeline_step(
-            batch_ts_size=batch_ts_size,
-            sliding_window_duration=sliding_window_duration,
-            data_dir=data_dir,
-            embedding_use_gpu=embedding_use_gpu,
-            link_prediction_use_gpu=link_prediction_use_gpu,
-            logger=logger
+        current_results = evaluate_bot_detection(
+            train_ids=train_ids,
+            train_labels=train_labels,
+            val_ids=val_ids,
+            val_labels=val_labels,
+            test_ids=test_ids,
+            test_labels=test_labels,
+            embedding_tensor=get_embedding_tensor(streaming_embeddings, max_node_id),
+            n_epochs=n_epochs,
+            batch_size=batch_size,
+            device=device
         )
 
-        # append each metric to its list
-        for k, v in metrics.items():
-            merged.setdefault(k, []).append(float(v))
+        for key in current_results.keys():
+            if key not in streaming_results:
+                streaming_results[key] = []
+            streaming_results[key].append(current_results[key])
 
-    with open(os.path.join('results', 'twibot_results.pickle'), "wb") as f:
-        pickle.dump(merged, f)
+    logger.info(f"\nBot Detection Results:")
+    logger.info("=" * 80)
 
-    logger.info(f"Saved merged test metrics to {os.path.join('results', 'twibot_results.pickle')}")
-    return merged
+    for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score']:
+        if metric in streaming_results:
+            values = streaming_results[metric]
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+            logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
 
-if __name__ == "__main__":
-    logger = setup_logging()
-    logger.info("Starting Twibot-22 node classification.")
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    parser = argparse.ArgumentParser(description="Script to do node classification with twibot 22")
+        with open(output_path, 'wb') as f:
+            pickle.dump(streaming_results, f)
+        logger.info(f"Results saved to {output_path}")
 
-    parser.add_argument(
-        '--data_dir', type=str, required=True,
-        help='Base directory containing data files'
-    )
+    return streaming_results
 
-    parser.add_argument(
-        '--batch_ts_size', type=int, default=31_556_952,
-        help='Batch duration (seconds) per streaming step'
-    )
 
-    parser.add_argument(
-        '--sliding_window_duration', type=int, default=157_784_760,
-        help='Sliding window duration in seconds'
-    )
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Bot Detection with Streaming Embeddings")
 
-    parser.add_argument('--embedding_use_gpu', action='store_true',
-                        help='Enable GPU acceleration for embedding approach')
+    # Required arguments
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Base directory containing data files')
+    parser.add_argument('--batch_ts_size', type=int, required=True,
+                        help='Time duration per batch for streaming approach')
+    parser.add_argument('--sliding_window_duration', type=int, required=True,
+                        help='Sliding window duration for temporal random walk')
+    parser.add_argument('--is_directed', type=lambda x: x.lower() == 'true', required=True,
+                        help='Whether the graph is directed (true/false)')
 
-    parser.add_argument('--link_prediction_use_gpu', action='store_true',
-                        help='Enable GPU acceleration for link prediction neural network')
+    # Model parameters
+    parser.add_argument('--walk_length', type=int, default=100,
+                        help='Maximum length of random walks')
+    parser.add_argument('--num_walks_per_node', type=int, default=10,
+                        help='Number of walks to generate per node')
+    parser.add_argument('--edge_picker', type=str, default='ExponentialIndex',
+                        help='Edge picker for random walks')
+    parser.add_argument('--embedding_dim', type=int, default=128,
+                        help='Dimensionality of node embeddings')
 
-    parser.add_argument('--n_runs', type=int, default=5, help='Number of runs')
+    # Training parameters
+    parser.add_argument('--n_epochs', type=int, default=20,
+                        help='Number of epochs for neural network training')
+    parser.add_argument('--n_runs', type=int, default=5,
+                        help='Number of experimental runs for averaging results')
+    parser.add_argument('--batch_size', type=int, default=8192,
+                        help='Batch size for training')
+
+    # GPU settings
+    parser.add_argument('--streaming_embedding_use_gpu', action='store_true',
+                        help='Enable GPU acceleration for streaming embedding approach')
+    parser.add_argument('--bot_detection_use_gpu', action='store_true',
+                        help='Enable GPU acceleration for bot detection neural network')
+
+    # Other settings
+    parser.add_argument('--word2vec_n_workers', type=int, default=8,
+                        help='Number of workers for Word2Vec training')
+    parser.add_argument('--word2vec_batch_epochs', type=int, default=3,
+                        help='Number of batch epochs for incremental Word2Vec training')
+    parser.add_argument('--output_path', type=str, default=None,
+                        help='File path to save results (optional)')
 
     args = parser.parse_args()
 
-    _ = run_bot_detection_pipeline(
-        args.batch_ts_size,
-        args.sliding_window_duration,
-        args.n_runs,
-        args.data_dir,
-        args.embedding_use_gpu,
-        args.link_prediction_use_gpu,
-        logger
+    # Run experiments
+    results = run_bot_detection_experiments(
+        data_dir=args.data_dir,
+        is_directed=args.is_directed,
+        batch_ts_size=args.batch_ts_size,
+        sliding_window_duration=args.sliding_window_duration,
+        walk_length=args.walk_length,
+        num_walks_per_node=args.num_walks_per_node,
+        edge_picker=args.edge_picker,
+        embedding_dim=args.embedding_dim,
+        n_epochs=args.n_epochs,
+        streaming_embedding_use_gpu=args.streaming_embedding_use_gpu,
+        bot_detection_use_gpu=args.bot_detection_use_gpu,
+        n_runs=args.n_runs,
+        batch_size=args.batch_size,
+        word2vec_n_workers=args.word2vec_n_workers,
+        word2vec_batch_epochs=args.word2vec_batch_epochs,
+        output_path=args.output_path
     )
-
-
-
