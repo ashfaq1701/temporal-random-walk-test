@@ -196,8 +196,8 @@ def train_bot_detection_model(model,
     pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    # Add learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=3, factor=0.5, verbose=True)
+    # Remove verbose=True parameter
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=3, factor=0.5)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
