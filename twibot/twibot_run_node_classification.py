@@ -666,7 +666,7 @@ def run_bot_detection_experiments(
             batch_epochs=word2vec_batch_epochs
         )
     else:
-        train_embeddings_full_approach(
+        embeddings = train_embeddings_full_approach(
             train_sources=train_sources,
             train_targets=train_targets,
             train_timestamps=train_timestamps,
