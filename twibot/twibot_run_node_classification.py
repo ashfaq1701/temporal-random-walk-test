@@ -12,7 +12,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
@@ -129,13 +128,11 @@ class BotDetectionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor):
         super().__init__()
 
-        self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=False)
+        self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
 
         input_dim = node_embeddings_tensor.shape[1]
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
-
-        self.norm = nn.LayerNorm(input_dim)
 
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
         self.dropout1 = nn.Dropout(0.2)
@@ -153,9 +150,7 @@ class BotDetectionModel(nn.Module):
         nodes = nodes.to(device)
         node_emb = self.embedding_lookup(nodes)
 
-        x = self.norm(node_emb)
-
-        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc1(node_emb))
         x = self.dropout1(x)
 
         x = F.relu(self.fc2(x))
@@ -178,16 +173,9 @@ def train_bot_detection_model(model,
 
     model = model.to(device)
 
-    emb_params = list(model.embedding_lookup.parameters())
-    mlp_params = [p for n, p in model.named_parameters() if not n.startswith('embedding_lookup')]
-
-    optimizer = torch.optim.Adam([
-        {'params': mlp_params, 'lr': 3e-4, 'weight_decay': 1e-5},
-        {'params': emb_params, 'lr': 3e-5, 'weight_decay': 1e-6},
-    ])
-
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6, cooldown=0
+        optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
     )
 
     # Calculate class imbalance for weighted loss
