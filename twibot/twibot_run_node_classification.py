@@ -294,6 +294,9 @@ def train_bot_detection_model(model,
         train_auc = roc_auc_score(all_train_targets, all_train_preds)
         val_auc = roc_auc_score(all_val_targets, all_val_preds)
 
+        train_f1_score = f1_score(all_train_targets, all_train_preds)
+        val_f1_score = f1_score(all_val_targets, all_val_preds)
+
         # Step the scheduler
         scheduler.step(val_auc)
 
@@ -301,18 +304,20 @@ def train_bot_detection_model(model,
         history['val_loss'].append(avg_val_loss)
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
+        history['train_f1_score'].append(train_f1_score)
+        history['val_f1_score'].append(val_f1_score)
 
         epoch_pbar.set_postfix({
             'train_loss': f'{avg_train_loss:.4f}',
             'val_loss': f'{avg_val_loss:.4f}',
-            'train_auc': f'{train_auc:.4f}',
-            'val_auc': f'{val_auc:.4f}'
+            'train_f1_score': f'{train_f1_score:.4f}',
+            'val_f1_score': f'{val_f1_score:.4f}'
         })
 
         logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, "
-                    f"Val Loss: {avg_val_loss:.4f}, Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
+                    f"Val Loss: {avg_val_loss:.4f}, Train F1-Score: {train_f1_score:.4f}, Val F1-Score: {val_f1_score:.4f}")
 
-        if early_stopping(val_auc, model):
+        if early_stopping(val_f1_score, model):
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
@@ -746,7 +751,7 @@ if __name__ == '__main__':
                         help='Dimensionality of node embeddings')
 
     # Training parameters
-    parser.add_argument('--n_epochs', type=int, default=20,
+    parser.add_argument('--n_epochs', type=int, default=50,
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=5,
                         help='Number of experimental runs for averaging results')
