@@ -152,7 +152,8 @@ class BotDetectionModel(nn.Module):
         nodes = nodes.to(device)
         node_emb = self.embedding_lookup(nodes)
 
-        x = F.relu(self.fc1(node_emb))
+        x = self.norm(node_emb)
+
         x = F.relu(self.fc1(x))
         x = self.dropout1(x)
 
@@ -163,7 +164,6 @@ class BotDetectionModel(nn.Module):
         x = self.dropout3(x)
 
         return self.fc_out(x)
-
 
 def train_bot_detection_model(model,
                               X_train, y_train,
