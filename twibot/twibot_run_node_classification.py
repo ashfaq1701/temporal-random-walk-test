@@ -22,8 +22,8 @@ from tqdm import tqdm
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-random.seed(42);
-np.random.seed(42);
+random.seed(42)
+np.random.seed(42)
 torch.manual_seed(42)
 
 
@@ -129,7 +129,7 @@ class BotDetectionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor):
         super().__init__()
 
-        self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
+        self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=False)
 
         input_dim = node_embeddings_tensor.shape[1]
         hidden_dim1 = max(64, input_dim // 2)
@@ -171,7 +171,6 @@ def train_bot_detection_model(model,
                               X_train, y_train,
                               X_val, y_val,
                               batch_size,
-                              learning_rate=0.001,
                               epochs=20,
                               device='cpu',
                               patience=5):
@@ -179,7 +178,17 @@ def train_bot_detection_model(model,
 
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    emb_params = list(model.embedding_lookup.parameters())
+    mlp_params = [p for n, p in model.named_parameters() if not n.startswith('embedding_lookup')]
+
+    optimizer = torch.optim.Adam([
+        {'params': mlp_params, 'lr': 3e-4, 'weight_decay': 1e-5},
+        {'params': emb_params, 'lr': 3e-5, 'weight_decay': 1e-6},
+    ])
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6, cooldown=0
+    )
 
     # Calculate class imbalance for weighted loss
     pos = int(y_train.sum())
@@ -188,9 +197,6 @@ def train_bot_detection_model(model,
 
     pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-    # Remove verbose=True parameter
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=3, factor=0.5)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
@@ -226,7 +232,12 @@ def train_bot_detection_model(model,
     logger.info(f"Training: {len(train_loader)} batches of {batch_size:,}")
     logger.info(f"Validation: {len(val_loader)} batches of {val_batch_size:,}")
 
-    history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': []}
+    history = {
+        'train_loss': [], 'val_loss': [],
+        'train_auc': [], 'val_auc': [],
+        'train_f1': [], 'val_f1': []
+    }
+
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
 
     for epoch in epoch_pbar:
@@ -294,30 +305,30 @@ def train_bot_detection_model(model,
         train_auc = roc_auc_score(all_train_targets, all_train_preds)
         val_auc = roc_auc_score(all_val_targets, all_val_preds)
 
-        train_f1_score = f1_score(all_train_targets, all_train_preds)
-        val_f1_score = f1_score(all_val_targets, all_val_preds)
+        train_f1 = f1_score(all_train_targets, (all_train_preds >= 0.5).astype(int), zero_division=0)
+        val_f1 = f1_score(all_val_targets, (all_val_preds >= 0.5).astype(int), zero_division=0)
 
         # Step the scheduler
-        scheduler.step(val_auc)
+        scheduler.step(val_f1)
 
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
-        history['train_f1_score'].append(train_f1_score)
-        history['val_f1_score'].append(val_f1_score)
+        history['train_f1'].append(train_f1)
+        history['val_f1'].append(val_f1)
 
         epoch_pbar.set_postfix({
             'train_loss': f'{avg_train_loss:.4f}',
             'val_loss': f'{avg_val_loss:.4f}',
-            'train_f1_score': f'{train_f1_score:.4f}',
-            'val_f1_score': f'{val_f1_score:.4f}'
+            'train_f1_score': f'{train_f1:.4f}',
+            'val_f1_score': f'{val_f1:.4f}'
         })
 
         logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, "
-                    f"Val Loss: {avg_val_loss:.4f}, Train F1-Score: {train_f1_score:.4f}, Val F1-Score: {val_f1_score:.4f}")
+                    f"Val Loss: {avg_val_loss:.4f}, Train F1-Score: {train_f1:.4f}, Val F1-Score: {val_f1:.4f}")
 
-        if early_stopping(val_f1_score, model):
+        if early_stopping(val_f1, model):
             logger.info(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
@@ -549,18 +560,29 @@ def train_embeddings_streaming_approach(
     return node_embeddings
 
 
-def get_embedding_tensor(embedding_dict, max_node_id):
-    embedding_dim = len(next(iter(embedding_dict.values())))
-    embedding_matrix = torch.zeros((max_node_id + 1, embedding_dim), dtype=torch.float32)
+def get_embedding_tensor(embedding_dict, max_node_id, rand_scale=0.02):
+    """
+    Build a dense embedding tensor [0..max_node_id].
+    Rows without a pretrained vector are filled with small random noise.
+    """
+    dim = len(next(iter(embedding_dict.values())))
+    emb = torch.zeros((max_node_id + 1, dim), dtype=torch.float32)
 
-    nodes_filled = 0
-    for node_id, embedding in embedding_dict.items():
+    for node_id, vec in embedding_dict.items():
         if node_id <= max_node_id:
-            embedding_matrix[node_id] = torch.tensor(embedding, dtype=torch.float32)
-            nodes_filled += 1
+            emb[node_id] = torch.tensor(vec, dtype=torch.float32)
 
-    logger.info(f"Embedding tensor: shape={tuple(embedding_matrix.shape)}, rows_filled={nodes_filled:,}")
-    return embedding_matrix
+    # fill any missing rows with random noise
+    missing_mask = (emb.abs().sum(dim=1) == 0)
+    if missing_mask.any():
+        emb[missing_mask] = torch.randn((missing_mask.sum(), dim), dtype=torch.float32) * rand_scale
+
+    logger.info(
+        f"Embedding tensor: shape={tuple(emb.shape)}, "
+        f"rows_filled={(~missing_mask).sum().item():,}, "
+        f"random_init_missing={missing_mask.sum().item():,}"
+    )
+    return emb
 
 
 def evaluate_bot_detection(
@@ -644,7 +666,7 @@ def run_bot_detection_experiments(
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
     logger.info("=" * 60)
-    logger.info("Computing embeddings with streaming approach...")
+    logger.info(f"Computing embeddings with {embedding_mode} approach...")
     logger.info("=" * 60)
 
     if embedding_mode == 'streaming':
