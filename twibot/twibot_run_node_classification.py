@@ -124,6 +124,7 @@ class EarlyStopping:
         return False
 
 
+
 class BotDetectionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor):
         super().__init__()
@@ -131,45 +132,37 @@ class BotDetectionModel(nn.Module):
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
 
         input_dim = node_embeddings_tensor.shape[1]
-        hidden_dim1 = max(256, input_dim)
-        hidden_dim2 = max(128, input_dim // 2)
-        hidden_dim3 = max(64, input_dim // 4)
+        hidden_dim1 = max(64, input_dim // 2)
+        hidden_dim2 = max(32, input_dim // 4)
 
-        self.bn1 = nn.BatchNorm1d(hidden_dim1)
-        self.bn2 = nn.BatchNorm1d(hidden_dim2)
-        self.bn3 = nn.BatchNorm1d(hidden_dim3)
+        self.norm = nn.LayerNorm(input_dim)
 
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
-        self.dropout1 = nn.Dropout(0.3)
+        self.dropout1 = nn.Dropout(0.2)
 
         self.fc2 = nn.Linear(hidden_dim1, hidden_dim2)
-        self.dropout2 = nn.Dropout(0.3)
+        self.dropout2 = nn.Dropout(0.2)
 
-        self.fc3 = nn.Linear(hidden_dim2, hidden_dim3)
-        self.dropout3 = nn.Dropout(0.2)
+        self.fc3 = nn.Linear(hidden_dim2, 16)
+        self.dropout3 = nn.Dropout(0.1)
 
-        self.fc4 = nn.Linear(hidden_dim3, 32)
-        self.dropout4 = nn.Dropout(0.1)
-
-        self.fc_out = nn.Linear(32, 1)
+        self.fc_out = nn.Linear(16, 1)
 
     def forward(self, nodes):
         device = next(self.parameters()).device
         nodes = nodes.to(device)
-
         node_emb = self.embedding_lookup(nodes)
 
-        x = F.relu(self.bn1(self.fc1(node_emb)))
+        x = self.norm(node_emb)
+
+        x = F.relu(self.fc1(x))
         x = self.dropout1(x)
 
-        x = F.relu(self.bn2(self.fc2(x)))
+        x = F.relu(self.fc2(x))
         x = self.dropout2(x)
 
-        x = F.relu(self.bn3(self.fc3(x)))
+        x = F.relu(self.fc3(x))
         x = self.dropout3(x)
-
-        x = F.relu(self.fc4(x))
-        x = self.dropout4(x)
 
         return self.fc_out(x)
 
