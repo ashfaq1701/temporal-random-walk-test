@@ -134,6 +134,8 @@ class BotDetectionModel(nn.Module):
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
 
+        self.norm = nn.LayerNorm(input_dim)
+
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
         self.dropout1 = nn.Dropout(0.2)
 
@@ -151,6 +153,7 @@ class BotDetectionModel(nn.Module):
         node_emb = self.embedding_lookup(nodes)
 
         x = F.relu(self.fc1(node_emb))
+        x = F.relu(self.fc1(x))
         x = self.dropout1(x)
 
         x = F.relu(self.fc2(x))
@@ -173,7 +176,7 @@ def train_bot_detection_model(model,
 
     model = model.to(device)
 
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-3)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
     )
