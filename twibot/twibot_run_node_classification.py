@@ -790,7 +790,7 @@ if __name__ == '__main__':
                         help='Embedding mode - streaming or full')
 
     # Model parameters
-    parser.add_argument('--walk_length', type=int, default=100,
+    parser.add_argument('--walk_length', type=int, default=60,
                         help='Maximum length of random walks')
     parser.add_argument('--num_walks_per_node', type=int, default=20,
                         help='Number of walks to generate per node')
