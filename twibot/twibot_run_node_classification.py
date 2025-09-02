@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from gensim.models import Word2Vec
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, average_precision_score
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
@@ -127,43 +127,52 @@ class EarlyStopping:
 class BotDetectionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor):
         super().__init__()
-
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
 
-        input_dim = node_embeddings_tensor.shape[1]
-        hidden_dim1 = max(64, input_dim // 2)
-        hidden_dim2 = max(32, input_dim // 4)
+        d = node_embeddings_tensor.shape[1]
+        h1 = max(128, d)          # a bit wider first layer
+        h2 = max(64,  d // 2)
 
-        self.norm = nn.LayerNorm(input_dim)
+        self.norm = nn.LayerNorm(d)
 
-        self.fc1 = nn.Linear(input_dim, hidden_dim1)
-        self.dropout1 = nn.Dropout(0.2)
+        self.fc1  = nn.Linear(d,  h1)
+        self.do1  = nn.Dropout(0.10)
 
-        self.fc2 = nn.Linear(hidden_dim1, hidden_dim2)
-        self.dropout2 = nn.Dropout(0.2)
+        self.fc2  = nn.Linear(h1, h2)
+        self.proj = nn.Linear(d,  h2)   # projection for skip
+        self.do2  = nn.Dropout(0.10)
 
-        self.fc3 = nn.Linear(hidden_dim2, 16)
-        self.dropout3 = nn.Dropout(0.1)
+        self.fc3  = nn.Linear(h2, 16)
+        self.do3  = nn.Dropout(0.10)
 
         self.fc_out = nn.Linear(16, 1)
 
     def forward(self, nodes):
-        device = next(self.parameters()).device
-        nodes = nodes.to(device)
-        node_emb = self.embedding_lookup(nodes)
+        x = self.embedding_lookup(nodes.to(next(self.parameters()).device))
+        x = self.norm(x)
 
-        x = self.norm(node_emb)
+        h = F.relu(self.fc1(x)); h = self.do1(h)
+        h = F.relu(self.fc2(h) + self.proj(x)); h = self.do2(h)   # residual
+        h = F.relu(self.fc3(h)); h = self.do3(h)
+        return self.fc_out(h)
 
-        x = F.relu(self.fc1(x))
-        x = self.dropout1(x)
 
-        x = F.relu(self.fc2(x))
-        x = self.dropout2(x)
+class FocalBCE(nn.Module):
+    def __init__(self, gamma=2.0, alpha=None):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
 
-        x = F.relu(self.fc3(x))
-        x = self.dropout3(x)
+    def forward(self, logits, y):
+        # y, logits: (N,1)
+        bce = F.binary_cross_entropy_with_logits(logits, y, reduction='none')
+        p = torch.sigmoid(logits)
+        pt = p*y + (1-p)*(1-y)
+        loss = (1-pt).pow(self.gamma) * bce
+        if self.alpha is not None:
+            loss = loss*(self.alpha*y + (1-self.alpha)*(1-y))
+        return loss.mean()
 
-        return self.fc_out(x)
 
 def train_bot_detection_model(model,
                               X_train, y_train,
@@ -186,8 +195,8 @@ def train_bot_detection_model(model,
     neg = int(len(y_train) - pos)
     logger.info(f"Class balance — train: pos={pos} ({pos / len(y_train):.2%}), neg={neg} ({neg / len(y_train):.2%})")
 
-    pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    alpha = pos / (pos + neg)
+    criterion = FocalBCE(gamma=2.0, alpha=alpha)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
@@ -576,6 +585,17 @@ def get_embedding_tensor(embedding_dict, max_node_id, rand_scale=0.02):
     return emb
 
 
+def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """
+    Choose the probability threshold that maximizes F1 on the validation set.
+    Searches a small grid in [0.05, 0.95].
+    """
+    thr_grid = np.linspace(0.05, 0.95, 19)
+    f1s = [f1_score(y_true, (y_prob >= t).astype(int), zero_division=0) for t in thr_grid]
+    best_idx = int(np.argmax(f1s))
+    return float(thr_grid[best_idx])
+
+
 def evaluate_bot_detection(
         train_ids, train_labels,
         val_ids, val_labels,
@@ -594,14 +614,21 @@ def evaluate_bot_detection(
         batch_size=batch_size, epochs=n_epochs, device=device, patience=5
     )
 
-    # Make predictions
-    logger.info("Making final predictions...")
+    # ---- Pick threshold on validation ----
+    logger.info("Selecting decision threshold on validation set...")
+    val_pred_proba = predict_with_model(model, val_ids, batch_size=batch_size, device=device)
+    best_thr = _pick_threshold(val_labels, val_pred_proba)
+    val_ap = average_precision_score(val_labels, val_pred_proba)
+    logger.info(f"Selected threshold (val F1-optimal): {best_thr:.3f} — Val AP: {val_ap:.4f}")
+
+    # ---- Test predictions with chosen threshold ----
+    logger.info("Making final predictions on test set...")
     test_pred_proba = predict_with_model(model, test_ids, batch_size=batch_size, device=device)
+    test_pred = (test_pred_proba >= best_thr).astype(int)
 
-    test_pred = (test_pred_proba > 0.5).astype(int)
-
-    # Calculate standard metrics for test set
+    # ---- Metrics ----
     test_auc = roc_auc_score(test_labels, test_pred_proba)
+    test_ap = average_precision_score(test_labels, test_pred_proba)
     test_accuracy = accuracy_score(test_labels, test_pred)
     test_precision = precision_score(test_labels, test_pred, zero_division=0)
     test_recall = recall_score(test_labels, test_pred, zero_division=0)
@@ -609,14 +636,23 @@ def evaluate_bot_detection(
 
     results = {
         'auc': test_auc,
+        'ap': test_ap,
         'accuracy': test_accuracy,
         'precision': test_precision,
         'recall': test_recall,
         'f1_score': test_f1,
+        'threshold': best_thr,
+        'val_ap': val_ap,
         'training_history': history
     }
 
-    logger.info(f"Bot detection completed - AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}, F1: {test_f1:.4f}")
+    logger.info(
+        f"Bot detection completed — "
+        f"AUC: {test_auc:.4f}, AP: {test_ap:.4f}, "
+        f"Accuracy: {test_accuracy:.4f}, Precision: {test_precision:.4f}, "
+        f"Recall: {test_recall:.4f}, F1: {test_f1:.4f} "
+        f"(thr={best_thr:.3f})"
+    )
     return results
 
 
@@ -756,7 +792,7 @@ if __name__ == '__main__':
     # Model parameters
     parser.add_argument('--walk_length', type=int, default=100,
                         help='Maximum length of random walks')
-    parser.add_argument('--num_walks_per_node', type=int, default=10,
+    parser.add_argument('--num_walks_per_node', type=int, default=20,
                         help='Number of walks to generate per node')
     parser.add_argument('--edge_picker', type=str, default='ExponentialIndex',
                         help='Edge picker for random walks')
@@ -780,7 +816,7 @@ if __name__ == '__main__':
     # Other settings
     parser.add_argument('--word2vec_n_workers', type=int, default=8,
                         help='Number of workers for Word2Vec training')
-    parser.add_argument('--word2vec_batch_epochs', type=int, default=3,
+    parser.add_argument('--word2vec_batch_epochs', type=int, default=10,
                         help='Number of batch epochs for incremental Word2Vec training')
     parser.add_argument('--output_path', type=str, default=None,
                         help='File path to save results (optional)')
