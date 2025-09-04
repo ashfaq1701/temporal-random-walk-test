@@ -513,21 +513,20 @@ def train_embeddings_streaming_approach(
 
 
 def get_embedding_tensor(embedding_dict, max_node_id, rand_scale=0.02):
-    """
-    Build a dense embedding tensor [0..max_node_id].
-    Rows without a pretrained vector are filled with small random noise.
-    """
     dim = len(next(iter(embedding_dict.values())))
     emb = torch.zeros((max_node_id + 1, dim), dtype=torch.float32)
-
     for node_id, vec in embedding_dict.items():
         if node_id <= max_node_id:
             emb[node_id] = torch.tensor(vec, dtype=torch.float32)
 
-    # fill any missing rows with random noise
     missing_mask = (emb.abs().sum(dim=1) == 0)
     if missing_mask.any():
         emb[missing_mask] = torch.randn((missing_mask.sum(), dim), dtype=torch.float32) * rand_scale
+
+    # L2 normalize rows
+    with torch.no_grad():
+        norms = emb.norm(p=2, dim=1, keepdim=True).clamp_min(1e-8)
+        emb = emb / norms
 
     logger.info(
         f"Embedding tensor: shape={tuple(emb.shape)}, "
