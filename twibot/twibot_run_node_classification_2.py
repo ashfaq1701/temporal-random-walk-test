@@ -157,23 +157,6 @@ class BotDetectionModel(nn.Module):
         return self.fc_out(h)
 
 
-class FocalBCE(nn.Module):
-    def __init__(self, gamma=2.0, alpha=None):
-        super().__init__()
-        self.gamma = gamma
-        self.alpha = alpha
-
-    def forward(self, logits, y):
-        # y, logits: (N,1)
-        bce = F.binary_cross_entropy_with_logits(logits, y, reduction='none')
-        p = torch.sigmoid(logits)
-        pt = p*y + (1-p)*(1-y)
-        loss = (1-pt).pow(self.gamma) * bce
-        if self.alpha is not None:
-            loss = loss*(self.alpha*y + (1-self.alpha)*(1-y))
-        return loss.mean()
-
-
 def train_bot_detection_model(model,
                               X_train, y_train,
                               X_val, y_val,
@@ -195,8 +178,8 @@ def train_bot_detection_model(model,
     neg = int(len(y_train) - pos)
     logger.info(f"Class balance — train: pos={pos} ({pos / len(y_train):.2%}), neg={neg} ({neg / len(y_train):.2%})")
 
-    alpha = pos / (pos + neg)
-    criterion = FocalBCE(gamma=2.0, alpha=alpha)
+    pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
