@@ -418,7 +418,7 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
     )
 
     logger.info(
-        f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}')
+        f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}, Max length: {np.max(walk_lengths_forward):.2f}')
 
     logger.info(
         f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
@@ -433,13 +433,13 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
     )
 
     logger.info(
-        f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}')
+        f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}, Max length: {np.max(walk_lengths_backward):.2f}')
 
     # Combine walks
     walks = np.concatenate([walks_forward, walks_backward], axis=0)
     walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
 
-    logger.info(f'Generated {len(walks)} walks. Mean length: {np.mean(walk_lengths):.2f}')
+    logger.info(f'Generated {len(walks)} walks. Mean length: {np.mean(walk_lengths):.2f}, Max length: {np.max(walk_lengths):.2f}')
 
     clean_walks = []
     for walk, length in zip(walks, walk_lengths):
@@ -513,11 +513,14 @@ def train_embeddings_streaming_approach(
         )
 
         # Log walk statistics
-        logger.info(f"Generated walks - Forward: {len(walks_f)} walks (mean length: {np.mean(lens_f):.2f}), "
-                    f"Backward: {len(walks_b)} walks (mean length: {np.mean(lens_b):.2f})")
+        logger.info(f"Generated walks - Forward: {len(walks_f)} walks (mean length: {np.mean(lens_f):.2f}, max length: {np.max(lens_f):.2f}), "
+                    f"Backward: {len(walks_b)} walks (mean length: {np.mean(lens_b):.2f}, max length: {np.max(lens_f):.2f})")
 
         walks = np.concatenate([walks_f, walks_b], axis=0)
         lens = np.concatenate([lens_f, lens_b], axis=0)
+
+        logger.info(
+            f'Generated {len(walks)} walks. Mean length: {np.mean(lens):.2f}, Max length: {np.max(lens):.2f}')
 
         clean_walks = []
         for w, L in zip(walks, lens):
