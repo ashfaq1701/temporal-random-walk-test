@@ -597,14 +597,6 @@ def prepare_node_features(node_features, scaler=None):
     return feature_tensor, scaler
 
 
-def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """Choose optimal probability threshold based on F1 score."""
-    thr_grid = np.linspace(0.05, 0.95, 19)
-    f1s = [f1_score(y_true, (y_prob >= t).astype(int), zero_division=0) for t in thr_grid]
-    best_idx = int(np.argmax(f1s))
-    return float(thr_grid[best_idx])
-
-
 def evaluate_fraud_detection(
         train_ids, train_labels, val_ids, val_labels, test_ids, test_labels,
         embedding_tensor, node_features_tensor, n_epochs, batch_size, device
@@ -619,17 +611,17 @@ def evaluate_fraud_detection(
         batch_size=batch_size, epochs=n_epochs, device=device, patience=5
     )
 
-    # Threshold selection on validation set
-    logger.info("Selecting decision threshold on validation set...")
+    # Validation predictions
+    logger.info("Making predictions on validation set...")
     val_pred_proba = predict_with_model(model, val_ids, batch_size=batch_size, device=device)
-    best_thr = _pick_threshold(val_labels, val_pred_proba)
+    val_auc = roc_auc_score(val_labels, val_pred_proba)
     val_ap = average_precision_score(val_labels, val_pred_proba)
-    logger.info(f"Selected threshold: {best_thr:.3f} — Val AP: {val_ap:.4f}")
+    logger.info(f"Validation — AUC: {val_auc:.4f}, AP: {val_ap:.4f}")
 
     # Test predictions
     logger.info("Making final predictions on test set...")
     test_pred_proba = predict_with_model(model, test_ids, batch_size=batch_size, device=device)
-    test_pred = (test_pred_proba >= best_thr).astype(int)
+    test_pred = (test_pred_proba >= 0.5).astype(int)
 
     # Calculate metrics
     test_auc = roc_auc_score(test_labels, test_pred_proba)
@@ -646,7 +638,7 @@ def evaluate_fraud_detection(
         'precision': test_precision,
         'recall': test_recall,
         'f1_score': test_f1,
-        'threshold': best_thr,
+        'val_auc': val_auc,
         'val_ap': val_ap,
         'training_history': history
     }
