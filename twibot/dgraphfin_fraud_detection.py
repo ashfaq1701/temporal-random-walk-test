@@ -127,8 +127,6 @@ class EarlyStopping:
 
 
 class FraudDetectionModel(nn.Module):
-    """Fraud detection model with attention-based fusion of temporal embeddings and static features."""
-
     def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
         super().__init__()
 
@@ -644,7 +642,7 @@ def evaluate_fraud_detection(
     }
 
     logger.info(f"Fraud detection completed — "
-                f"AUC: {test_auc:.4f}, AP: {test_ap:.4f}, "
+                f"AUC: {test_auc:.4f}, Val AUC: {val_auc:.4f}, AP: {test_ap:.4f}, "
                 f"Accuracy: {test_accuracy:.4f}, Precision: {test_precision:.4f}, "
                 f"Recall: {test_recall:.4f}, F1: {test_f1:.4f}")
     return results
@@ -762,7 +760,6 @@ def run_fraud_detection_experiments(
         # Add metadata to results
         results['metadata'] = {
             'embedding_mode': embedding_mode,
-            'fusion_strategy': 'attention',
             'batch_ts_size': batch_ts_size,
             'sliding_window_duration': sliding_window_duration,
             'embedding_dim': embedding_dim,
