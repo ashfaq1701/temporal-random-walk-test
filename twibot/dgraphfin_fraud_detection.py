@@ -804,9 +804,9 @@ if __name__ == '__main__':
                         help='Embedding mode - streaming or full')
 
     # Model parameters
-    parser.add_argument('--walk_length', type=int, default=100,
+    parser.add_argument('--walk_length', type=int, default=40,
                         help='Maximum length of random walks')
-    parser.add_argument('--num_walks_per_node', type=int, default=10,
+    parser.add_argument('--num_walks_per_node', type=int, default=20,
                         help='Number of walks to generate per node')
     parser.add_argument('--edge_picker', type=str, default='ExponentialIndex',
                         help='Edge picker for random walks')
@@ -818,7 +818,7 @@ if __name__ == '__main__':
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=5,
                         help='Number of experimental runs for averaging results')
-    parser.add_argument('--batch_size', type=int, default=8192,
+    parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size for training')
 
     # GPU settings
