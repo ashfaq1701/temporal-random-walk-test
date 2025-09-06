@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, average_precision_score
+from sklearn.metrics import roc_curve
 from sklearn.preprocessing import StandardScaler
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset
@@ -595,6 +596,13 @@ def prepare_node_features(node_features, scaler=None):
     return feature_tensor, scaler
 
 
+def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    j_scores = tpr - fpr
+    best_idx = np.argmax(j_scores)
+    return float(thresholds[best_idx])
+
+
 def evaluate_fraud_detection(
         train_ids, train_labels, val_ids, val_labels, test_ids, test_labels,
         embedding_tensor, node_features_tensor, n_epochs, batch_size, device
@@ -616,10 +624,13 @@ def evaluate_fraud_detection(
     val_ap = average_precision_score(val_labels, val_pred_proba)
     logger.info(f"Validation — AUC: {val_auc:.4f}, AP: {val_ap:.4f}")
 
+    best_threshold = _pick_threshold(val_labels, val_pred_proba)
+    logger.info(f"Best threshold is: {best_threshold:.4f}")
+
     # Test predictions
     logger.info("Making final predictions on test set...")
     test_pred_proba = predict_with_model(model, test_ids, batch_size=batch_size, device=device)
-    test_pred = (test_pred_proba >= 0.5).astype(int)
+    test_pred = (test_pred_proba >= best_threshold).astype(int)
 
     # Calculate metrics
     test_auc = roc_auc_score(test_labels, test_pred_proba)
@@ -638,6 +649,7 @@ def evaluate_fraud_detection(
         'f1_score': test_f1,
         'val_auc': val_auc,
         'val_ap': val_ap,
+        'best_threshold': best_threshold,
         'training_history': history
     }
 
