@@ -13,7 +13,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from gensim.models import Word2Vec
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, average_precision_score
+from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
+    average_precision_score, precision_recall_curve
 from sklearn.metrics import roc_curve
 from sklearn.preprocessing import StandardScaler
 from temporal_random_walk import TemporalRandomWalk
@@ -582,24 +583,32 @@ def get_embedding_tensor(embedding_dict, max_node_id, rand_scale=0.02):
     return emb
 
 
-def prepare_node_features(node_features, scaler=None):
+def prepare_node_features(node_features, train_ids, scaler=None):
     """Prepare and normalize node features."""
     if scaler is None:
-        scaler = StandardScaler()
-        scaler.fit(node_features)
+        scaler = StandardScaler().fit(node_features[train_ids])
 
-    # Normalize features
     normalized_features = scaler.transform(node_features)
     feature_tensor = torch.tensor(normalized_features, dtype=torch.float32)
 
-    logger.info(f"Node features: shape={feature_tensor.shape}")
+    logger.info(f"Node features: shape={feature_tensor.shape}, fitted on {len(train_ids):,} train nodes")
     return feature_tensor, scaler
 
 
 def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
-    j_scores = tpr - fpr
-    best_idx = np.argmax(j_scores)
+    """Pick the threshold that maximizes F1 score on validation set."""
+    unique = np.unique(y_true)
+    if unique.size < 2:
+        return 0.5  # fallback when all labels are same
+
+    precision, recall, thresholds = precision_recall_curve(y_true, y_prob)
+
+    p, r = precision[1:], recall[1:]
+    if thresholds.size == 0:
+        return 0.5
+
+    f1_scores = 2 * p * r / np.clip(p + r, 1e-12, None)
+    best_idx = np.nanargmax(f1_scores)
     return float(thresholds[best_idx])
 
 
@@ -687,7 +696,7 @@ def run_fraud_detection_experiments(
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
     # Prepare node features
-    node_features_tensor, feature_scaler = prepare_node_features(node_features)
+    node_features_tensor, feature_scaler = prepare_node_features(node_features, train_ids)
 
     logger.info("=" * 60)
     logger.info(f"Computing embeddings with {embedding_mode} approach...")
