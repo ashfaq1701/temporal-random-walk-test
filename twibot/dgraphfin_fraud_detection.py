@@ -18,7 +18,7 @@ from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, reca
 from sklearn.metrics import roc_curve
 from sklearn.preprocessing import StandardScaler
 from temporal_random_walk import TemporalRandomWalk
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -128,221 +128,205 @@ class EarlyStopping:
         return False
 
 
-class FraudDetectionModel(nn.Module):
-    def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
+class ResBlock(nn.Module):
+    def __init__(self, d, p=0.2):
         super().__init__()
+        self.bn1 = nn.BatchNorm1d(d)
+        self.fc1 = nn.Linear(d, d)
+        self.bn2 = nn.BatchNorm1d(d)
+        self.fc2 = nn.Linear(d, d)
+        self.drop = nn.Dropout(p)
+        self.act = nn.LeakyReLU(0.1, inplace=True)
 
-        # Embedding components
+    def forward(self, x):
+        r = x
+        x = self.act(self.bn1(x))
+        x = self.drop(self.fc1(x))
+        x = self.act(self.bn2(x))
+        x = self.fc2(x)
+        return self.act(x + r)
+
+class FraudDetectionModel(nn.Module):
+    """
+    Frozen embedding + features → dual projection → interaction features → residual MLP head.
+    Tokens are not used; attention is dropped for a stronger tabular head.
+    """
+    def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor,
+                 proj_dim: int = 128, head_width: int = 256, n_blocks: int = 3, dropout: float = 0.2):
+        super().__init__()
+        # 1) Frozen lookup and feature buffer
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
-        self.node_features = nn.Parameter(node_features_tensor, requires_grad=False)
+        self.register_buffer("node_features", node_features_tensor, persistent=False)
 
-        # Dimensions
-        embed_dim = node_embeddings_tensor.shape[1]
-        feature_dim = node_features_tensor.shape[1]
+        e_dim = int(node_embeddings_tensor.shape[1])
+        f_dim = int(node_features_tensor.shape[1])
 
-        # Feature normalization
-        self.feature_norm = nn.LayerNorm(feature_dim)
-        self.embed_norm = nn.LayerNorm(embed_dim)
+        # 2) Per-branch normalization+projection
+        self.emb_bn   = nn.BatchNorm1d(e_dim)
+        self.feat_bn  = nn.BatchNorm1d(f_dim)
+        self.emb_proj = nn.Linear(e_dim, proj_dim)
+        self.feat_proj= nn.Linear(f_dim, proj_dim)
+        self.emb_act  = nn.LeakyReLU(0.1, inplace=True)
+        self.feat_act = nn.LeakyReLU(0.1, inplace=True)
 
-        # Attention-based fusion architecture
-        hidden_dim = 128
-        self.temp_proj = nn.Linear(embed_dim, hidden_dim)
-        self.feat_proj = nn.Linear(feature_dim, hidden_dim)
+        # 3) Fusion: [emb_p, feat_p, emb_p ⊙ feat_p, cos_sim] → fuse to head_width
+        self.fuse = nn.Linear(proj_dim*3 + 1, head_width)
 
-        # Multi-head attention for feature fusion
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=4,
-            batch_first=True,
-            dropout=0.1
-        )
+        # 4) Residual head
+        blocks = []
+        for _ in range(n_blocks):
+            blocks.append(ResBlock(head_width, p=dropout))
+        self.blocks = nn.Sequential(*blocks)
 
-        # Classification head
-        self.fusion_fc1 = nn.Linear(hidden_dim, 64)
-        self.fusion_fc2 = nn.Linear(64, 32)
-        self.fusion_fc3 = nn.Linear(32, 16)
-        self.fc_out = nn.Linear(16, 1)
+        self.pre_out_bn = nn.BatchNorm1d(head_width)
+        self.pre_out_act= nn.LeakyReLU(0.1, inplace=True)
 
-        self.dropout = nn.Dropout(0.15)
+        # 5) Weight-norm on output sharpens margins
+        self.fc_out = nn.utils.parametrizations.weight_norm(nn.Linear(head_width, 1))
 
-    def forward(self, nodes):
-        device = next(self.parameters()).device
-        nodes = nodes.to(device)
+    def forward(self, nodes: torch.Tensor):
+        dev = next(self.parameters()).device
+        nodes = nodes.to(dev)
 
-        # Get temporal embeddings and static features
-        temp_embed = self.embedding_lookup(nodes)
-        static_feat = self.node_features[nodes]
+        e = self.embedding_lookup(nodes)          # [B, E]
+        x = self.node_features[nodes]             # [B, F]
 
-        # Normalize inputs
-        temp_embed = self.embed_norm(temp_embed)
-        static_feat = self.feature_norm(static_feat)
+        # Per-branch BN + projection
+        e = self.emb_act(self.emb_proj(self.emb_bn(e)))
+        x = self.feat_act(self.feat_proj(self.feat_bn(x)))
 
-        # Project to common dimension
-        temp_proj = self.temp_proj(temp_embed).unsqueeze(1)  # [batch, 1, hidden_dim]
-        feat_proj = self.feat_proj(static_feat).unsqueeze(1)  # [batch, 1, hidden_dim]
+        # Interaction + cosine
+        inter = e * x                              # Hadamard
+        cos = F.cosine_similarity(e, x, dim=1, eps=1e-8).unsqueeze(1)  # [B,1]
 
-        # Stack for attention mechanism
-        stacked = torch.cat([temp_proj, feat_proj], dim=1)  # [batch, 2, hidden_dim]
-
-        # Self-attention to learn feature interactions
-        attended, attention_weights = self.attention(stacked, stacked, stacked)
-
-        # Aggregate attended features (weighted average)
-        pooled = attended.mean(dim=1)  # [batch, hidden_dim]
-
-        # Classification layers with residual connection
-        x = F.relu(self.fusion_fc1(pooled))
-        x = self.dropout(x)
-
-        x_res = F.relu(self.fusion_fc2(x))
-        x_res = self.dropout(x_res)
-
-        x = F.relu(self.fusion_fc3(x_res))
-        x = self.dropout(x)
-
-        return self.fc_out(x)
+        z = torch.cat([e, x, inter, cos], dim=1)  # [B, 3P+1]
+        h = self.fuse(z)                           # [B, W]
+        h = self.blocks(h)
+        h = self.pre_out_act(self.pre_out_bn(h))
+        return self.fc_out(h)                      # [B,1] (logit)
 
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
                                 batch_size, epochs=20, device='cpu', patience=5):
-    """Train fraud detection model."""
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
-
     model = model.to(device)
 
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-3, weight_decay=1e-5)
+    # Optimizer & scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
     )
 
-    # Calculate class weights for imbalanced dataset
-    pos = int(y_train.sum())
-    neg = int(len(y_train) - pos)
+    # Imbalance
+    pos = int(y_train.sum()); neg = int(len(y_train) - pos)
     logger.info(f"Class balance — train: fraud={pos} ({pos / len(y_train):.2%}), normal={neg}")
-
     pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    early_stopping = EarlyStopping(mode='max', patience=patience)
+    # Loss with label smoothing
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
+    smooth_eps = 0.05
 
-    # Prepare data loaders
-    train_dataset = TensorDataset(
-        torch.tensor(X_train, dtype=torch.long),
-        torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
-    )
+    # Datasets
+    train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.long),
+                                  torch.tensor(y_train, dtype=torch.float32).unsqueeze(1))
+    val_dataset   = TensorDataset(torch.tensor(X_val, dtype=torch.long),
+                                  torch.tensor(y_val, dtype=torch.float32).unsqueeze(1))
 
-    val_dataset = TensorDataset(
-        torch.tensor(X_val, dtype=torch.long),
-        torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
-    )
+    # Safe DataLoader setup
+    num_workers_raw = os.cpu_count() or 0
+    num_workers = min(8, num_workers_raw)
+    use_workers = num_workers > 0
 
-    num_workers = min(8, os.cpu_count())
+    # Balanced sampler for train
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
+    class_count = torch.tensor([(y_train_tensor == 0).sum(), (y_train_tensor == 1).sum()], dtype=torch.float32)
+    class_weight = 1.0 / class_count
+    sample_weight = class_weight[(y_train_tensor.long())].numpy()
+    sampler = WeightedRandomSampler(sample_weight, num_samples=len(sample_weight), replacement=True)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
+        train_dataset, batch_size=batch_size, sampler=sampler,
         pin_memory=(device == 'cuda'), num_workers=num_workers,
-        persistent_workers=True, prefetch_factor=4
+        persistent_workers=use_workers, prefetch_factor=(4 if use_workers else None)
     )
-
     val_loader = DataLoader(
-        val_dataset, batch_size=batch_size * 4, shuffle=False,
+        val_dataset, batch_size=min(batch_size * 4, 2048), shuffle=False,
         pin_memory=(device == 'cuda'), num_workers=num_workers,
-        persistent_workers=True, prefetch_factor=4
+        persistent_workers=use_workers, prefetch_factor=(4 if use_workers else None)
     )
 
-    history = {
-        'train_loss': [], 'val_loss': [],
-        'train_auc': [], 'val_auc': [],
-        'train_f1': [], 'val_f1': []
-    }
-
+    history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': [], 'train_f1': [], 'val_f1': []}
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
+    early_stopping = EarlyStopping(mode='max', patience=patience)
+
+    def _safe_auc(y_true, y_prob):
+        return roc_auc_score(y_true, y_prob) if np.unique(y_true).size > 1 else np.nan
 
     for epoch in epoch_pbar:
-        # Training phase
         model.train()
         total_train_loss = 0.0
-        train_preds_list = []
-        train_targets_list = []
+        train_probs, train_tgts = [], []
 
         for batch_x, batch_y in train_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(batch_x)
 
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            y_smooth = batch_y * (1.0 - smooth_eps) + 0.5 * smooth_eps
+            loss = criterion(logits, y_smooth).mean()
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            total_train_loss += loss.item()
-            train_preds_list.append(torch.sigmoid(outputs).detach())
-            train_targets_list.append(batch_y)
+            total_train_loss += float(loss.detach().cpu())
+            train_probs.append(torch.sigmoid(logits).detach().cpu().numpy())
+            train_tgts.append(batch_y.detach().cpu().numpy())
 
-        avg_train_loss = total_train_loss / len(train_loader)
+        avg_train_loss = total_train_loss / max(1, len(train_loader))
 
-        # Validation phase
         model.eval()
         total_val_loss = 0.0
-        val_preds_list = []
-        val_targets_list = []
-
+        val_probs, val_tgts = [], []
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
                 batch_x = batch_x.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
 
-                outputs = model(batch_x)
-                loss = criterion(outputs, batch_y)
+                logits = model(batch_x)
+                y_smooth = batch_y * (1.0 - smooth_eps) + 0.5 * smooth_eps
+                loss = criterion(logits, y_smooth).mean()
+                total_val_loss += float(loss.detach().cpu())
 
-                total_val_loss += loss.item()
-                val_preds_list.append(torch.sigmoid(outputs))
-                val_targets_list.append(batch_y)
+                val_probs.append(torch.sigmoid(logits).cpu().numpy())
+                val_tgts.append(batch_y.cpu().numpy())
 
-        avg_val_loss = total_val_loss / len(val_loader)
+        # Stack metrics
+        train_probs = np.concatenate(train_probs).ravel()
+        train_tgts  = np.concatenate(train_tgts).ravel()
+        val_probs   = np.concatenate(val_probs).ravel()
+        val_tgts    = np.concatenate(val_tgts).ravel()
 
-        # Calculate metrics
-        train_preds = torch.cat(train_preds_list).cpu().numpy().flatten()
-        train_targets = torch.cat(train_targets_list).cpu().numpy().flatten()
-        val_preds = torch.cat(val_preds_list).cpu().numpy().flatten()
-        val_targets = torch.cat(val_targets_list).cpu().numpy().flatten()
+        train_auc = _safe_auc(train_tgts, train_probs)
+        val_auc   = _safe_auc(val_tgts, val_probs)
+        train_f1  = f1_score(train_tgts, (train_probs >= 0.5).astype(int), zero_division=0)
+        val_f1    = f1_score(val_tgts,   (val_probs  >= 0.5).astype(int), zero_division=0)
 
-        train_auc = roc_auc_score(train_targets, train_preds)
-        val_auc = roc_auc_score(val_targets, val_preds)
+        scheduler.step(val_auc if np.isfinite(val_auc) else 0.0)
 
-        train_f1 = f1_score(train_targets, (train_preds >= 0.5).astype(int), zero_division=0)
-        val_f1 = f1_score(val_targets, (val_preds >= 0.5).astype(int), zero_division=0)
+        history['train_loss'].append(avg_train_loss);                      history['val_loss'].append(total_val_loss / max(1, len(val_loader)))
+        history['train_auc'].append(train_auc);                             history['val_auc'].append(val_auc)
+        history['train_f1'].append(train_f1);                               history['val_f1'].append(val_f1)
 
-        # Use AUC for scheduling and early stopping
-        scheduler.step(val_auc)
+        epoch_pbar.set_postfix({'train_loss': f'{avg_train_loss:.4f}', 'val_auc': f'{val_auc:.4f}'})
+        logger.info(f"Epoch {epoch + 1}/{epochs} — Train Loss: {avg_train_loss:.4f}, Val AUC: {val_auc:.4f}")
 
-        history['train_loss'].append(avg_train_loss)
-        history['val_loss'].append(avg_val_loss)
-        history['train_auc'].append(train_auc)
-        history['val_auc'].append(val_auc)
-        history['train_f1'].append(train_f1)
-        history['val_f1'].append(val_f1)
-
-        epoch_pbar.set_postfix({
-            'train_loss': f'{avg_train_loss:.4f}',
-            'val_loss': f'{avg_val_loss:.4f}',
-            'train_auc': f'{train_auc:.4f}',
-            'val_auc': f'{val_auc:.4f}'
-        })
-
-        logger.info(f"Epoch {epoch + 1}/{epochs} — "
-                    f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
-                    f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
-
-        if early_stopping(val_auc, model):
+        if early_stopping(val_auc if np.isfinite(val_auc) else -1e9, model):
             logger.info(f"Early stopping at epoch {epoch + 1}")
             break
 
-        # Memory cleanup
-        del train_preds_list, train_targets_list, val_preds_list, val_targets_list
         if device == 'cuda':
             torch.cuda.empty_cache()
 
