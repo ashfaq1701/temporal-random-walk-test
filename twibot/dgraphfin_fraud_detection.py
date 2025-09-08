@@ -7,7 +7,9 @@ import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
+from typing import List, Sequence
 
+import math
 import numpy as np
 import pandas as pd
 import torch
@@ -203,110 +205,150 @@ class FraudDetectionModel(nn.Module):
         return self.fc_out(x)
 
 
-class StratifiedBatchSampler(Sampler):
-    """Custom sampler that ensures each batch has consistent class distribution while using ALL samples."""
+class StratifiedBatchSampler(Sampler[List[int]]):
+    """
+    Simple stratified batch sampler (no drop_last):
+      - Each index is used exactly once per epoch (no duplication).
+      - Each batch follows global class proportions as closely as possible.
+      - Last batch may be smaller than batch_size.
+    """
 
-    def __init__(self, labels, batch_size, drop_last=False):
-        super().__init__()
-        self.labels = labels
-        self.batch_size = batch_size
-        self.drop_last = drop_last
+    def __init__(
+        self,
+        labels: Sequence[int] | torch.Tensor,
+        batch_size: int,
+        shuffle: bool = True,
+        seed: int | None = None,
+    ):
+        super().__init__(None)
+        assert batch_size >= 2, "batch_size must be >= 2"
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.seed = seed
 
-        # Group indices by class
-        self.class_indices = defaultdict(list)
-        for idx, label in enumerate(labels):
-            self.class_indices[int(label)].append(idx)
+        if isinstance(labels, torch.Tensor):
+            labels = labels.detach().cpu().tolist()
+        self.labels = [int(l) for l in labels]
 
-        self.classes = list(self.class_indices.keys())
-        self.num_classes = len(self.classes)
+        # group indices by class
+        self.class_to_indices = defaultdict(list)
+        for i, y in enumerate(self.labels):
+            self.class_to_indices[y].append(i)
 
-        # Calculate target samples per class per batch based on proportions
-        total_samples = len(labels)
-        self.target_samples_per_class = {}
+        self.classes = sorted(self.class_to_indices.keys())
+        self.n = len(self.labels)
+        self.class_counts = {c: len(self.class_to_indices[c]) for c in self.classes}
+        self.total = sum(self.class_counts.values())
+        assert self.total == self.n
 
-        for cls in self.classes:
-            class_ratio = len(self.class_indices[cls]) / total_samples
-            target_samples = max(1, round(batch_size * class_ratio))
-            self.target_samples_per_class[cls] = target_samples
+        # precompute a simple per-batch quota from rounded proportions
+        self.quota = self._make_quota()
 
-        # Adjust if total exceeds batch_size
-        total_target = sum(self.target_samples_per_class.values())
-        if total_target > batch_size:
-            # Scale down proportionally, ensuring at least 1 per class
-            scale = batch_size / total_target
-            for cls in self.classes:
-                self.target_samples_per_class[cls] = max(1, int(self.target_samples_per_class[cls] * scale))
+    def __len__(self) -> int:
+        return math.ceil(self.n / self.batch_size)
 
-        # Calculate total batches needed to use ALL samples
-        # Use the largest class to determine total batches needed
-        max_batches_needed = max(
-            len(self.class_indices[cls]) // self.target_samples_per_class[cls]
-            for cls in self.classes
-        )
+    def set_epoch(self, epoch: int):
+        self._epoch = epoch
 
-        # Add extra batches for remainder samples
-        remainder_batches = 0
-        for cls in self.classes:
-            remainder = len(self.class_indices[cls]) % self.target_samples_per_class[cls]
-            if remainder > 0:
-                remainder_batches = max(remainder_batches, 1)
+    def _rng(self):
+        r = random.Random()
+        base = 0 if self.seed is None else int(self.seed)
+        epoch = getattr(self, "_epoch", 0)
+        r.seed(base + epoch)
+        return r
 
-        self.num_batches = max_batches_needed + remainder_batches
+    def _make_quota(self) -> dict[int, int]:
+        """Rounded proportions, adjusted to sum exactly to batch_size."""
+        quota = {}
+        for c in self.classes:
+            ratio = self.class_counts[c] / self.total if self.total > 0 else 0.0
+            quota[c] = max(0, int(round(ratio * self.batch_size)))
 
-        print(f"Stratified sampling setup (ALL samples included):")
-        for cls in self.classes:
-            print(
-                f"  Class {cls}: ~{self.target_samples_per_class[cls]} samples per batch ({len(self.class_indices[cls]):,} total)")
-        print(f"  Total batches: {self.num_batches}")
-        print(f"  Total samples that will be used: {total_samples:,}")
+        s = sum(quota.values())
+        # If we rounded to 0 everywhere (extreme skew & tiny batch), ensure at least 1
+        if s == 0:
+            # give the whole batch to the majority class
+            maj = max(self.classes, key=lambda cc: self.class_counts[cc])
+            quota[maj] = self.batch_size
+            s = self.batch_size
+
+        # adjust to match batch_size
+        if s < self.batch_size:
+            # add the missing slots to the largest classes first
+            missing = self.batch_size - s
+            by_size = sorted(self.classes, key=lambda c: self.class_counts[c], reverse=True)
+            i = 0
+            while missing > 0:
+                quota[by_size[i % len(by_size)]] += 1
+                missing -= 1
+                i += 1
+        elif s > self.batch_size:
+            # remove extras from the smallest classes first (but not below 0)
+            extra = s - self.batch_size
+            by_size = sorted(self.classes, key=lambda c: self.class_counts[c])  # small first
+            i = 0
+            while extra > 0 and i < len(by_size):
+                c = by_size[i]
+                if quota[c] > 0:
+                    take = min(quota[c], extra)
+                    quota[c] -= take
+                    extra -= take
+                i += 1
+
+        # final guard
+        assert sum(quota.values()) == self.batch_size, "quota allocation bug"
+        return quota
 
     def __iter__(self):
-        # Shuffle indices within each class
-        shuffled_class_indices = {}
-        for cls in self.classes:
-            indices = self.class_indices[cls].copy()
-            random.shuffle(indices)
-            shuffled_class_indices[cls] = indices
+        rng = self._rng()
 
-        # Keep track of used indices per class
-        used_indices = {cls: 0 for cls in self.classes}
+        # make working copies and shuffle within each class
+        buckets = {}
+        for c in self.classes:
+            idxs = self.class_to_indices[c][:]
+            if self.shuffle:
+                rng.shuffle(idxs)
+            buckets[c] = idxs
 
-        # Generate batches
-        for batch_idx in range(self.num_batches):
-            batch = []
+        ptr = {c: 0 for c in self.classes}
+        remaining = sum(len(buckets[c]) for c in self.classes)
 
-            for cls in self.classes:
-                available = len(shuffled_class_indices[cls]) - used_indices[cls]
+        while remaining > 0:
+            batch: List[int] = []
 
-                if available > 0:
-                    # Take target number or whatever is available
-                    take = min(self.target_samples_per_class[cls], available)
+            # 1) take up to quota from each class
+            for c in self.classes:
+                avail = len(buckets[c]) - ptr[c]
+                if avail <= 0:
+                    continue
+                need = self.quota[c]
+                take = min(need, avail)
+                if take > 0:
+                    batch.extend(buckets[c][ptr[c]: ptr[c] + take])
+                    ptr[c] += take
 
-                    start_idx = used_indices[cls]
-                    end_idx = start_idx + take
+            # 2) if batch not full, fill remainder greedily from classes with most left
+            if len(batch) < self.batch_size:
+                by_left = sorted(self.classes,
+                                 key=lambda cc: (len(buckets[cc]) - ptr[cc]),
+                                 reverse=True)
+                for c in by_left:
+                    if len(batch) >= self.batch_size:
+                        break
+                    avail = len(buckets[c]) - ptr[c]
+                    if avail <= 0:
+                        continue
+                    take = min(avail, self.batch_size - len(batch))
+                    batch.extend(buckets[c][ptr[c]: ptr[c] + take])
+                    ptr[c] += take
 
-                    batch.extend(shuffled_class_indices[cls][start_idx:end_idx])
-                    used_indices[cls] += take
+            # 3) shuffle within batch and yield (last batch may be smaller)
+            if self.shuffle and len(batch) > 1:
+                rng.shuffle(batch)
+            yield batch
 
-            # Only yield non-empty batches
-            if batch:
-                # Pad batch if needed and not dropping last
-                while len(batch) < self.batch_size and not self.drop_last:
-                    # Cycle through available samples to fill batch
-                    for cls in self.classes:
-                        if len(batch) >= self.batch_size:
-                            break
-                        available = len(shuffled_class_indices[cls]) - used_indices[cls]
-                        if available > 0:
-                            batch.append(shuffled_class_indices[cls][used_indices[cls]])
-                            used_indices[cls] += 1
-
-                # Shuffle within batch to avoid class ordering
-                random.shuffle(batch)
-                yield batch[:self.batch_size] if self.drop_last and len(batch) > self.batch_size else batch
-
-    def __len__(self):
-        return self.num_batches
+            # update remaining
+            remaining = sum(len(buckets[c]) - ptr[c] for c in self.classes)
 
 
 class FocalLoss(nn.Module):
@@ -343,140 +385,121 @@ class FocalLoss(nn.Module):
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
                                 batch_size, epochs=20, device='cpu', patience=5):
-    """Train fraud detection model with stratified batching."""
+    """Train fraud detection model with stratified batching (no drop_last)."""
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
-
     model = model.to(device)
 
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-3, weight_decay=1e-5)
+    # Optimizer & scheduler
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
     )
 
-    # Calculate class weights for imbalanced dataset
-    pos_count = int(y_train.sum())
-    alpha = pos_count / len(y_train)
-    criterion = FocalLoss(alpha=alpha, gamma=3.0)
+    criterion = FocalLoss(alpha=0.75, gamma=3.0, reduction='mean')
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
-    # Prepare datasets
+    # Datasets
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.long),
         torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
     )
-
     val_dataset = TensorDataset(
         torch.tensor(X_val, dtype=torch.long),
         torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
     )
 
-    # Create stratified sampler for training
-    train_sampler = StratifiedBatchSampler(y_train, batch_size, drop_last=True)
-    val_sampler = StratifiedBatchSampler(y_val, batch_size * 4, drop_last=False)
+    # ---- Samplers / Loaders
+    num_workers = min(8, os.cpu_count() or 0)
+    use_workers = num_workers > 0
 
-    num_workers = min(8, os.cpu_count())
+    # Use the simple StratifiedBatchSampler you just created (no drop_last arg)
+    train_sampler = StratifiedBatchSampler(y_train, batch_size=batch_size, shuffle=True, seed=42)
 
-    # Use custom batch sampler for training
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=True if num_workers > 0 else False
+        persistent_workers=use_workers
     )
 
-    # Use custom batch sampler for validation
+    # Validation: plain sequential loader (no stratification)
     val_loader = DataLoader(
         val_dataset,
-        batch_sampler=val_sampler,
+        batch_size=min(batch_size * 4, 2048),
+        shuffle=False,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=True if num_workers > 0 else False
+        persistent_workers=use_workers
     )
 
-    history = {
-        'train_loss': [], 'val_loss': [],
-        'train_auc': [], 'val_auc': [],
-        'train_f1': [], 'val_f1': []
-    }
-
+    history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': [], 'train_f1': [], 'val_f1': []}
     logger.info(f"Training with {len(train_loader)} stratified batches per epoch")
-
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
 
     for epoch in epoch_pbar:
-        # Training phase
+        # (optional) deterministic reshuffle per epoch
+        if hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(epoch)
+
+        # ---- Train ----
         model.train()
         total_train_loss = 0.0
-        train_preds_list = []
-        train_targets_list = []
-
+        train_preds_list, train_targets_list = [], []
         batch_fraud_counts = []
 
-        for batch_indices in train_loader:
-            batch_x = batch_indices[0].to(device, non_blocking=True)
-            batch_y = batch_indices[1].to(device, non_blocking=True)
+        for batch_x, batch_y in train_loader:
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
 
-            # Track fraud count in this batch
-            fraud_count = int(batch_y.sum().item())
-            batch_fraud_counts.append(fraud_count)
+            # Track positives per batch
+            batch_fraud_counts.append(int(batch_y.sum().item()))
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
             loss.backward()
-
-            # Gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            total_train_loss += loss.item()
+            total_train_loss += float(loss.detach().cpu())
             train_preds_list.append(torch.sigmoid(outputs).detach())
             train_targets_list.append(batch_y)
 
-        avg_train_loss = total_train_loss / len(train_loader)
+        avg_train_loss = total_train_loss / max(1, len(train_loader))
 
-        # Log batch consistency
-        if batch_fraud_counts:
-            fraud_std = np.std(batch_fraud_counts)
-            fraud_mean = np.mean(batch_fraud_counts)
-            logger.info(f"Batch fraud consistency - Mean: {fraud_mean:.1f}, Std: {fraud_std:.1f}")
-
-        # Validation phase
+        # ---- Validate ----
         model.eval()
         total_val_loss = 0.0
-        val_preds_list = []
-        val_targets_list = []
-
+        val_preds_list, val_targets_list = [], []
         with torch.no_grad():
-            for batch_indices in val_loader:
-                batch_x = batch_indices[0].to(device, non_blocking=True)
-                batch_y = batch_indices[1].to(device, non_blocking=True)
+            for batch_x, batch_y in val_loader:
+                batch_x = batch_x.to(device, non_blocking=True)
+                batch_y = batch_y.to(device, non_blocking=True)
 
                 outputs = model(batch_x)
                 loss = criterion(outputs, batch_y)
 
-                total_val_loss += loss.item()
+                total_val_loss += float(loss.detach().cpu())
                 val_preds_list.append(torch.sigmoid(outputs))
                 val_targets_list.append(batch_y)
 
-        avg_val_loss = total_val_loss / len(val_loader)
+        avg_val_loss = total_val_loss / max(1, len(val_loader))
 
-        # Calculate metrics
-        train_preds = torch.cat(train_preds_list).cpu().numpy().flatten()
-        train_targets = torch.cat(train_targets_list).cpu().numpy().flatten()
-        val_preds = torch.cat(val_preds_list).cpu().numpy().flatten()
-        val_targets = torch.cat(val_targets_list).cpu().numpy().flatten()
+        # ---- Metrics
+        train_preds = torch.cat(train_preds_list).cpu().numpy().ravel()
+        train_targets = torch.cat(train_targets_list).cpu().numpy().ravel()
+        val_preds = torch.cat(val_preds_list).cpu().numpy().ravel()
+        val_targets = torch.cat(val_targets_list).cpu().numpy().ravel()
 
-        train_auc = roc_auc_score(train_targets, train_preds)
-        val_auc = roc_auc_score(val_targets, val_preds)
+        train_auc = roc_auc_score(train_targets, train_preds) if np.unique(train_targets).size > 1 else np.nan
+        val_auc = roc_auc_score(val_targets, val_preds) if np.unique(val_targets).size > 1 else np.nan
 
         train_f1 = f1_score(train_targets, (train_preds >= 0.5).astype(int), zero_division=0)
         val_f1 = f1_score(val_targets, (val_preds >= 0.5).astype(int), zero_division=0)
 
-        # Use AUC for scheduling and early stopping
-        scheduler.step(val_auc)
+        scheduler.step(val_auc if np.isfinite(val_auc) else 0.0)
 
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
@@ -492,16 +515,19 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
             'val_auc': f'{val_auc:.4f}'
         })
 
+        # Optional: log batch positive consistency
+        if batch_fraud_counts:
+            logger.info(f"Batch fraud consistency — mean: {np.mean(batch_fraud_counts):.2f}, "
+                        f"std: {np.std(batch_fraud_counts):.2f}")
+
         logger.info(f"Epoch {epoch + 1}/{epochs} — "
                     f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
                     f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
-        if early_stopping(val_auc, model):
+        if early_stopping(val_auc if np.isfinite(val_auc) else -1e9, model):
             logger.info(f"Early stopping at epoch {epoch + 1}")
             break
 
-        # Memory cleanup
-        del train_preds_list, train_targets_list, val_preds_list, val_targets_list
         if device == 'cuda':
             torch.cuda.empty_cache()
 
@@ -516,41 +542,44 @@ def predict_with_model(model, X_test, batch_size, device='cpu'):
 
     logger.info(f"Making predictions on {len(X_test):,} samples")
 
-    test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.long))
+    # Avoid unnecessary copy; ensure long dtype for embedding lookups
+    x_tensor = torch.as_tensor(X_test, dtype=torch.long)
+    test_dataset = TensorDataset(x_tensor)
 
-    num_workers = min(8, os.cpu_count())
+    num_workers = min(8, os.cpu_count() or 0)
+    use_workers = num_workers > 0
 
     test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False,
-        pin_memory=(device == 'cuda'), num_workers=num_workers,
-        persistent_workers=True, prefetch_factor=4
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=(device == 'cuda'),
+        num_workers=num_workers,
+        persistent_workers=use_workers,
+        prefetch_factor=(4 if use_workers else None),
     )
 
     logger.info(f"Processing {len(test_loader)} batches")
 
-    predictions_list = []
-
-    prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
-
-    with torch.no_grad():
+    preds_cpu_chunks = []
+    with torch.inference_mode():
+        prediction_pbar = tqdm(test_loader, desc="Predicting", unit="batch")
         for (batch_x,) in prediction_pbar:
             batch_x = batch_x.to(device, non_blocking=True)
-
             logits = model(batch_x)
-            probs = torch.sigmoid(logits).detach().float()
-            predictions_list.append(probs)
+            probs = torch.sigmoid(logits)
+
+            # Move each chunk to CPU immediately to avoid device-memory buildup
+            preds_cpu_chunks.append(probs.detach().cpu())
 
             prediction_pbar.set_postfix({
-                'batches_processed': len(predictions_list),
-                'batch_size': len(batch_x)
+                'batches_processed': len(preds_cpu_chunks),
+                'batch_size': len(batch_x),
             })
+        prediction_pbar.close()
 
-    prediction_pbar.close()
+    all_predictions = torch.cat(preds_cpu_chunks, dim=0).numpy().ravel()
 
-    logger.info("Transferring predictions to CPU...")
-    all_predictions = torch.cat(predictions_list, dim=0).cpu().numpy().flatten()
-
-    del predictions_list
     if device == 'cuda':
         torch.cuda.empty_cache()
 
@@ -775,7 +804,7 @@ def evaluate_fraud_detection(
         train_ids, train_labels, val_ids, val_labels, test_ids, test_labels,
         embedding_tensor, node_features_tensor, n_epochs, batch_size, device
 ):
-    """Evaluate fraud detection performance with stratified batching."""
+    """Evaluate fraud detection performance."""
     logger.info(f"Fraud detection — train: {len(train_ids):,}, val: {len(val_ids):,}, test: {len(test_ids):,}")
 
     model = FraudDetectionModel(embedding_tensor, node_features_tensor).to(device)
@@ -785,28 +814,33 @@ def evaluate_fraud_detection(
         batch_size=batch_size, epochs=n_epochs, device=device, patience=5
     )
 
+    # Faster eval without changing metrics
+    eval_bs = min(batch_size * 4, 2048)
+
     # Validation predictions
     logger.info("Making predictions on validation set...")
-    val_pred_proba = predict_with_model(model, val_ids, batch_size=batch_size, device=device)
+    val_pred_proba = predict_with_model(model, val_ids, batch_size=eval_bs, device=device)
     val_auc = roc_auc_score(val_labels, val_pred_proba)
-    val_ap = average_precision_score(val_labels, val_pred_proba)
+    val_ap  = average_precision_score(val_labels, val_pred_proba)
     logger.info(f"Validation — AUC: {val_auc:.4f}, AP: {val_ap:.4f}")
 
     best_threshold = _pick_threshold(val_labels, val_pred_proba)
-    logger.info(f"Best threshold is: {best_threshold:.4f}")
+    val_pred_bin = (val_pred_proba >= best_threshold).astype(int)
+    val_f1_at_thr = f1_score(val_labels, val_pred_bin, zero_division=0)
+    logger.info(f"Best threshold: {best_threshold:.4f} | Val F1@thr: {val_f1_at_thr:.4f}")
 
-    # Test predictions
+    # Test predictions (threshold decided on val)
     logger.info("Making final predictions on test set...")
-    test_pred_proba = predict_with_model(model, test_ids, batch_size=batch_size, device=device)
+    test_pred_proba = predict_with_model(model, test_ids, batch_size=eval_bs, device=device)
     test_pred = (test_pred_proba >= best_threshold).astype(int)
 
-    # Calculate metrics
+    # Metrics
     test_auc = roc_auc_score(test_labels, test_pred_proba)
-    test_ap = average_precision_score(test_labels, test_pred_proba)
-    test_accuracy = accuracy_score(test_labels, test_pred)
+    test_ap  = average_precision_score(test_labels, test_pred_proba)
+    test_accuracy  = accuracy_score(test_labels, test_pred)
     test_precision = precision_score(test_labels, test_pred, zero_division=0)
-    test_recall = recall_score(test_labels, test_pred, zero_division=0)
-    test_f1 = f1_score(test_labels, test_pred, zero_division=0)
+    test_recall    = recall_score(test_labels, test_pred, zero_division=0)
+    test_f1        = f1_score(test_labels, test_pred, zero_division=0)
 
     results = {
         'auc': test_auc,
@@ -821,10 +855,11 @@ def evaluate_fraud_detection(
         'training_history': history
     }
 
-    logger.info(f"Fraud detection completed — "
-                f"AUC: {test_auc:.4f}, Val AUC: {val_auc:.4f}, AP: {test_ap:.4f}, "
-                f"Accuracy: {test_accuracy:.4f}, Precision: {test_precision:.4f}, "
-                f"Recall: {test_recall:.4f}, F1: {test_f1:.4f}")
+    logger.info(
+        f"Fraud detection completed — AUC: {test_auc:.4f}, Val AUC: {val_auc:.4f}, "
+        f"AP: {test_ap:.4f}, Acc: {test_accuracy:.4f}, P: {test_precision:.4f}, "
+        f"R: {test_recall:.4f}, F1: {test_f1:.4f}"
+    )
     return results
 
 
