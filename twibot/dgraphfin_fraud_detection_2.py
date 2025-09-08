@@ -129,6 +129,8 @@ class EarlyStopping:
 
 
 class FraudDetectionModel(nn.Module):
+    """More sophisticated MLP with feature interaction modeling."""
+
     def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
         super().__init__()
 
@@ -141,66 +143,74 @@ class FraudDetectionModel(nn.Module):
         feature_dim = node_features_tensor.shape[1]
 
         # Feature normalization
-        self.feature_norm = nn.LayerNorm(feature_dim)
-        self.embed_norm = nn.LayerNorm(embed_dim)
+        self.feature_norm = nn.BatchNorm1d(feature_dim)
+        self.embed_norm = nn.BatchNorm1d(embed_dim)
 
-        # Attention-based fusion architecture
+        # Separate processing paths
         hidden_dim = 128
-        self.temp_proj = nn.Linear(embed_dim, hidden_dim)
-        self.feat_proj = nn.Linear(feature_dim, hidden_dim)
 
-        # Multi-head attention for feature fusion
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=4,
-            batch_first=True,
-            dropout=0.1
+        # Temporal embedding path
+        self.temp_branch = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim // 2)
         )
 
-        # Classification head
-        self.fusion_fc1 = nn.Linear(hidden_dim, 64)
-        self.fusion_fc2 = nn.Linear(64, 32)
-        self.fusion_fc3 = nn.Linear(32, 16)
-        self.fc_out = nn.Linear(16, 1)
+        # Static feature path
+        self.feat_branch = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim // 2)
+        )
 
-        self.dropout = nn.Dropout(0.15)
+        # Cross-feature interactions
+        interaction_dim = (hidden_dim // 2) * 2
+        self.interaction_layer = nn.Sequential(
+            nn.Linear(interaction_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.3)
+        )
+
+        # Final classifier
+        final_input_dim = interaction_dim + hidden_dim  # Original features + interactions
+        self.classifier = nn.Sequential(
+            nn.Linear(final_input_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+
+            nn.Linear(64, 1)
+        )
 
     def forward(self, nodes):
         device = next(self.parameters()).device
         nodes = nodes.to(device)
 
-        # Get temporal embeddings and static features
+        # Get embeddings and features
         temp_embed = self.embedding_lookup(nodes)
         static_feat = self.node_features[nodes]
 
-        # Normalize inputs
+        # Normalize
         temp_embed = self.embed_norm(temp_embed)
         static_feat = self.feature_norm(static_feat)
 
-        # Project to common dimension
-        temp_proj = self.temp_proj(temp_embed).unsqueeze(1)  # [batch, 1, hidden_dim]
-        feat_proj = self.feat_proj(static_feat).unsqueeze(1)  # [batch, 1, hidden_dim]
+        # Process through separate branches
+        temp_processed = self.temp_branch(temp_embed)
+        feat_processed = self.feat_branch(static_feat)
 
-        # Stack for attention mechanism
-        stacked = torch.cat([temp_proj, feat_proj], dim=1)  # [batch, 2, hidden_dim]
+        # Combine for interactions
+        combined = torch.cat([temp_processed, feat_processed], dim=1)
+        interactions = self.interaction_layer(combined)
 
-        # Self-attention to learn feature interactions
-        attended, attention_weights = self.attention(stacked, stacked, stacked)
+        # Final combination
+        final_features = torch.cat([combined, interactions], dim=1)
 
-        # Aggregate attended features (weighted average)
-        pooled = attended.mean(dim=1)  # [batch, hidden_dim]
-
-        # Classification layers with residual connection
-        x = F.relu(self.fusion_fc1(pooled))
-        x = self.dropout(x)
-
-        x_res = F.relu(self.fusion_fc2(x))
-        x_res = self.dropout(x_res)
-
-        x = F.relu(self.fusion_fc3(x_res))
-        x = self.dropout(x)
-
-        return self.fc_out(x)
+        return self.classifier(final_features)
 
 
 class StratifiedBatchSampler(Sampler):
