@@ -215,150 +215,76 @@ class FraudDetectionModel(nn.Module):
         return self.classifier(final_features)
 
 
-class StratifiedBatchSampler(Sampler[List[int]]):
-    """
-    Simple stratified batch sampler (no drop_last):
-      - Each index is used exactly once per epoch (no duplication).
-      - Each batch follows global class proportions as closely as possible.
-      - Last batch may be smaller than batch_size.
-    """
-
-    def __init__(
-        self,
-        labels: Sequence[int] | torch.Tensor,
-        batch_size: int,
-        shuffle: bool = True,
-        seed: int | None = None,
-    ):
-        super().__init__(None)
-        assert batch_size >= 2, "batch_size must be >= 2"
+class BinaryStratifiedBatchSampler(Sampler):
+    def __init__(self, labels, batch_size, shuffle=True, seed=None):
+        super().__init__()
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
         self.seed = seed
 
-        if isinstance(labels, torch.Tensor):
+        # 1) Separate class item indices (0 vs 1)
+        if hasattr(labels, "detach"):  # torch.Tensor
             labels = labels.detach().cpu().tolist()
-        self.labels = [int(l) for l in labels]
+        labels = [int(l) for l in labels]
+        self.idx0 = [i for i, y in enumerate(labels) if y == 0]
+        self.idx1 = [i for i, y in enumerate(labels) if y == 1]
 
-        # group indices by class
-        self.class_to_indices = defaultdict(list)
-        for i, y in enumerate(self.labels):
-            self.class_to_indices[y].append(i)
+        # 2) Global proportion (normalized)
+        total = len(self.idx0) + len(self.idx1)
+        p1 = (len(self.idx1) / total) if total else 0.0
 
-        self.classes = sorted(self.class_to_indices.keys())
-        self.n = len(self.labels)
-        self.class_counts = {c: len(self.class_to_indices[c]) for c in self.classes}
-        self.total = sum(self.class_counts.values())
-        assert self.total == self.n
+        # 3) Fixed count in batch to maintain the proportion
+        self.n1_per_batch = int(round(self.batch_size * p1))
+        self.n0_per_batch = self.batch_size - self.n1_per_batch
 
-        # precompute a simple per-batch quota from rounded proportions
-        self.quota = self._make_quota()
-
-    def __len__(self) -> int:
-        return math.ceil(self.n / self.batch_size)
-
-    def set_epoch(self, epoch: int):
-        self._epoch = epoch
+    def __len__(self):
+        total = len(self.idx0) + len(self.idx1)
+        return math.ceil(total / self.batch_size)
 
     def _rng(self):
         r = random.Random()
-        base = 0 if self.seed is None else int(self.seed)
-        epoch = getattr(self, "_epoch", 0)
-        r.seed(base + epoch)
+        r.seed(0 if self.seed is None else int(self.seed))
         return r
-
-    def _make_quota(self) -> dict[int, int]:
-        """Rounded proportions, adjusted to sum exactly to batch_size."""
-        quota = {}
-        for c in self.classes:
-            ratio = self.class_counts[c] / self.total if self.total > 0 else 0.0
-            quota[c] = max(0, int(round(ratio * self.batch_size)))
-
-        s = sum(quota.values())
-        # If we rounded to 0 everywhere (extreme skew & tiny batch), ensure at least 1
-        if s == 0:
-            # give the whole batch to the majority class
-            maj = max(self.classes, key=lambda cc: self.class_counts[cc])
-            quota[maj] = self.batch_size
-            s = self.batch_size
-
-        # adjust to match batch_size
-        if s < self.batch_size:
-            # add the missing slots to the largest classes first
-            missing = self.batch_size - s
-            by_size = sorted(self.classes, key=lambda c: self.class_counts[c], reverse=True)
-            i = 0
-            while missing > 0:
-                quota[by_size[i % len(by_size)]] += 1
-                missing -= 1
-                i += 1
-        elif s > self.batch_size:
-            # remove extras from the smallest classes first (but not below 0)
-            extra = s - self.batch_size
-            by_size = sorted(self.classes, key=lambda c: self.class_counts[c])  # small first
-            i = 0
-            while extra > 0 and i < len(by_size):
-                c = by_size[i]
-                if quota[c] > 0:
-                    take = min(quota[c], extra)
-                    quota[c] -= take
-                    extra -= take
-                i += 1
-
-        # final guard
-        assert sum(quota.values()) == self.batch_size, "quota allocation bug"
-        return quota
 
     def __iter__(self):
         rng = self._rng()
 
-        # make working copies and shuffle within each class
-        buckets = {}
-        for c in self.classes:
-            idxs = self.class_to_indices[c][:]
-            if self.shuffle:
-                rng.shuffle(idxs)
-            buckets[c] = idxs
+        # Working copies; shuffle once per epoch
+        idx0 = self.idx0[:]
+        idx1 = self.idx1[:]
+        if self.shuffle:
+            rng.shuffle(idx0)
+            rng.shuffle(idx1)
 
-        ptr = {c: 0 for c in self.classes}
-        remaining = sum(len(buckets[c]) for c in self.classes)
+        p0 = p1 = 0  # pointers into buckets
+        rem0, rem1 = len(idx0), len(idx1)
 
-        while remaining > 0:
-            batch: List[int] = []
+        while (rem0 + rem1) > 0:
+            batch = []
 
-            # 1) take up to quota from each class
-            for c in self.classes:
-                avail = len(buckets[c]) - ptr[c]
-                if avail <= 0:
-                    continue
-                need = self.quota[c]
-                take = min(need, avail)
-                if take > 0:
-                    batch.extend(buckets[c][ptr[c]: ptr[c] + take])
-                    ptr[c] += take
+            # 3) Take up to the fixed per-batch counts
+            take1 = min(self.n1_per_batch, rem1)
+            take0 = min(self.n0_per_batch, rem0)
 
-            # 2) if batch not full, fill remainder greedily from classes with most left
-            if len(batch) < self.batch_size:
-                by_left = sorted(self.classes,
-                                 key=lambda cc: (len(buckets[cc]) - ptr[cc]),
-                                 reverse=True)
-                for c in by_left:
-                    if len(batch) >= self.batch_size:
-                        break
-                    avail = len(buckets[c]) - ptr[c]
-                    if avail <= 0:
-                        continue
-                    take = min(avail, self.batch_size - len(batch))
-                    batch.extend(buckets[c][ptr[c]: ptr[c] + take])
-                    ptr[c] += take
+            if take1 > 0:
+                batch.extend(idx1[p1 : p1 + take1]); p1 += take1; rem1 -= take1
+            if take0 > 0:
+                batch.extend(idx0[p0 : p0 + take0]); p0 += take0; rem0 -= take0
 
-            # 3) shuffle within batch and yield (last batch may be smaller)
+            # 3b) If one bucket ran short, 4) top up from the other
+            need = self.batch_size - len(batch)
+            if need > 0 and rem1 > 0:
+                extra = min(need, rem1)
+                batch.extend(idx1[p1 : p1 + extra]); p1 += extra; rem1 -= extra
+                need -= extra
+            if need > 0 and rem0 > 0:
+                extra = min(need, rem0)
+                batch.extend(idx0[p0 : p0 + extra]); p0 += extra; rem0 -= extra
+                need -= extra
+
             if self.shuffle and len(batch) > 1:
                 rng.shuffle(batch)
             yield batch
-
-            # update remaining
-            remaining = sum(len(buckets[c]) - ptr[c] for c in self.classes)
 
 
 class FocalLoss(nn.Module):
@@ -395,17 +321,23 @@ class FocalLoss(nn.Module):
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
                                 batch_size, epochs=20, device='cpu', patience=5):
-    """Train fraud detection model with stratified batching (no drop_last)."""
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
     model = model.to(device)
 
     # Optimizer & scheduler
-    optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
     )
 
-    criterion = FocalLoss(alpha=0.75, gamma=3.0, reduction='mean')
+    # Imbalance
+    pos = int(y_train.sum());
+    neg = int(len(y_train) - pos)
+    logger.info(f"Class balance — train: fraud={pos} ({pos / len(y_train):.2%}), normal={neg}")
+    pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
+
+    # Loss with label smoothing
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
@@ -424,7 +356,7 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
     use_workers = num_workers > 0
 
     # Use the simple StratifiedBatchSampler you just created (no drop_last arg)
-    train_sampler = StratifiedBatchSampler(y_train, batch_size=batch_size, shuffle=True, seed=42)
+    train_sampler = BinaryStratifiedBatchSampler(y_train, batch_size=128, shuffle=True, seed=42)
 
     train_loader = DataLoader(
         train_dataset,
