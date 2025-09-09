@@ -4,10 +4,8 @@ import os
 import pickle
 import random
 import warnings
-from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Sequence
 
 import math
 import numpy as np
@@ -18,7 +16,7 @@ import torch.nn.functional as F
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
     average_precision_score, precision_recall_curve
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset, Sampler
 from tqdm import tqdm
@@ -131,7 +129,7 @@ class EarlyStopping:
 
 
 class FraudDetectionModel(nn.Module):
-    """More sophisticated MLP with feature interaction modeling."""
+    """Simple MLP optimized for fraud detection based on data analysis."""
 
     def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
         super().__init__()
@@ -142,50 +140,32 @@ class FraudDetectionModel(nn.Module):
 
         # Dimensions
         embed_dim = node_embeddings_tensor.shape[1]
-        feature_dim = node_features_tensor.shape[1]
+        feature_dim = node_features_tensor.shape[1]  # Now 8 instead of 17
 
-        # Feature normalization
-        self.feature_norm = nn.BatchNorm1d(feature_dim)
-        self.embed_norm = nn.BatchNorm1d(embed_dim)
+        # Simple concatenation approach (analysis showed attention is overkill)
+        input_dim = embed_dim + feature_dim
 
-        # Separate processing paths
-        hidden_dim = 128
-
-        # Temporal embedding path
-        self.temp_branch = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim // 2)
-        )
-
-        # Static feature path
-        self.feat_branch = nn.Sequential(
-            nn.Linear(feature_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim // 2)
-        )
-
-        # Cross-feature interactions
-        interaction_dim = (hidden_dim // 2) * 2
-        self.interaction_layer = nn.Sequential(
-            nn.Linear(interaction_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.3)
-        )
-
-        # Final classifier
-        final_input_dim = interaction_dim + hidden_dim  # Original features + interactions
+        # Optimized architecture based on analysis
         self.classifier = nn.Sequential(
-            nn.Linear(final_input_dim, 128),
+            # Input normalization
+            nn.BatchNorm1d(input_dim),
+
+            # First layer - larger to capture interactions
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+
+            # Second layer
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.2),
 
+            # Third layer
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(0.1),
 
+            # Output
             nn.Linear(64, 1)
         )
 
@@ -197,22 +177,10 @@ class FraudDetectionModel(nn.Module):
         temp_embed = self.embedding_lookup(nodes)
         static_feat = self.node_features[nodes]
 
-        # Normalize
-        temp_embed = self.embed_norm(temp_embed)
-        static_feat = self.feature_norm(static_feat)
+        # Simple concatenation (analysis showed this is sufficient)
+        combined = torch.cat([temp_embed, static_feat], dim=1)
 
-        # Process through separate branches
-        temp_processed = self.temp_branch(temp_embed)
-        feat_processed = self.feat_branch(static_feat)
-
-        # Combine for interactions
-        combined = torch.cat([temp_processed, feat_processed], dim=1)
-        interactions = self.interaction_layer(combined)
-
-        # Final combination
-        final_features = torch.cat([combined, interactions], dim=1)
-
-        return self.classifier(final_features)
+        return self.classifier(combined)
 
 
 class BinaryStratifiedBatchSampler(Sampler):
@@ -221,6 +189,7 @@ class BinaryStratifiedBatchSampler(Sampler):
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
         self.seed = seed
+        self._epoch = 0
 
         # 1) Separate class item indices (0 vs 1)
         if hasattr(labels, "detach"):  # torch.Tensor
@@ -237,13 +206,18 @@ class BinaryStratifiedBatchSampler(Sampler):
         self.n1_per_batch = int(round(self.batch_size * p1))
         self.n0_per_batch = self.batch_size - self.n1_per_batch
 
+    def set_epoch(self, epoch: int):
+        self._epoch = epoch
+
     def __len__(self):
         total = len(self.idx0) + len(self.idx1)
         return math.ceil(total / self.batch_size)
 
     def _rng(self):
         r = random.Random()
-        r.seed(0 if self.seed is None else int(self.seed))
+        base = 0 if self.seed is None else int(self.seed)  # Set a default seed
+        epoch = getattr(self, "_epoch", 0)
+        r.seed(base + epoch)
         return r
 
     def __iter__(self):
@@ -287,36 +261,30 @@ class BinaryStratifiedBatchSampler(Sampler):
             yield batch
 
 
-class FocalLoss(nn.Module):
-    """Focal Loss for addressing class imbalance - focuses learning on hard examples."""
+def get_optimized_loss_function(pos_count, neg_count, device):
+    """Get loss function optimized for 78:1 imbalance."""
 
-    def __init__(self, alpha=1.0, gamma=2.0, reduction='mean'):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
+    imbalance_ratio = neg_count / pos_count
+    logger.info(f"Imbalance ratio: {imbalance_ratio:.1f}:1")
 
-    def forward(self, inputs, targets):
-        # Apply sigmoid to get probabilities
-        probs = torch.sigmoid(inputs)
+    # Based on analysis: weighted BCE is optimal for 78:1 ratio
+    pos_weight = torch.tensor(imbalance_ratio, device=device, dtype=torch.float32)
 
-        # Calculate focal loss components
-        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        p_t = probs * targets + (1 - probs) * (1 - targets)
-        focal_weight = (1 - p_t) ** self.gamma
+    # Slight label smoothing to prevent overconfidence
+    class BCEWithLabelSmoothing(nn.Module):
+        def __init__(self, pos_weight, smoothing=0.01):
+            super().__init__()
+            self.pos_weight = pos_weight
+            self.smoothing = smoothing
 
-        if self.alpha >= 0:
-            alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-            focal_loss = alpha_t * focal_weight * ce_loss
-        else:
-            focal_loss = focal_weight * ce_loss
+        def forward(self, input, target):
+            # Apply label smoothing
+            target_smooth = target * (1 - self.smoothing) + 0.5 * self.smoothing
+            return F.binary_cross_entropy_with_logits(
+                input, target_smooth, pos_weight=self.pos_weight
+            )
 
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
+    return BCEWithLabelSmoothing(pos_weight, smoothing=0.01)
 
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
@@ -324,24 +292,22 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
     model = model.to(device)
 
-    # Optimizer & scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    # Optimized optimizer settings
+    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+
+    # More aggressive scheduling since we have good features now
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
+        optimizer, mode='max', patience=3, factor=0.8, min_lr=1e-6
     )
 
-    # Imbalance
-    pos = int(y_train.sum());
+    # Get optimized loss function
+    pos = int(y_train.sum())
     neg = int(len(y_train) - pos)
-    logger.info(f"Class balance — train: fraud={pos} ({pos / len(y_train):.2%}), normal={neg}")
-    pos_weight = torch.tensor(neg / max(1, pos), device=device, dtype=torch.float32)
-
-    # Loss with label smoothing
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction='none')
+    criterion = get_optimized_loss_function(pos, neg, device)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
-    # Datasets
+    # Datasets with optimized batch size
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.long),
         torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
@@ -351,70 +317,68 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
     )
 
-    # ---- Samplers / Loaders
-    num_workers = min(8, os.cpu_count() or 0)
-    use_workers = num_workers > 0
+    # Optimized batch size for better fraud representation
+    optimal_batch_size = min(batch_size, 96)  # Ensure ~1-2 fraud per batch
 
-    # Use the simple StratifiedBatchSampler you just created (no drop_last arg)
-    train_sampler = BinaryStratifiedBatchSampler(y_train, batch_size=128, shuffle=True, seed=42)
+    num_workers = min(4, os.cpu_count() or 0)  # Reduced for stability
+
+    train_sampler = BinaryStratifiedBatchSampler(
+        y_train, batch_size=optimal_batch_size, shuffle=True, seed=42
+    )
 
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=use_workers
+        persistent_workers=(num_workers > 0)
     )
 
-    # Validation: plain sequential loader (no stratification)
     val_loader = DataLoader(
         val_dataset,
-        batch_size=min(batch_size * 4, 2048),
+        batch_size=optimal_batch_size * 4,
         shuffle=False,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=use_workers
+        persistent_workers=(num_workers > 0)
     )
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': [], 'train_f1': [], 'val_f1': []}
-    logger.info(f"Training with {len(train_loader)} stratified batches per epoch")
+
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
 
     for epoch in epoch_pbar:
-        # (optional) deterministic reshuffle per epoch
-        if hasattr(train_sampler, "set_epoch"):
-            train_sampler.set_epoch(epoch)
-
-        # ---- Train ----
+        # Training phase
         model.train()
+        train_sampler.set_epoch(epoch)
+
         total_train_loss = 0.0
         train_preds_list, train_targets_list = [], []
-        batch_fraud_counts = []
 
         for batch_x, batch_y in train_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
-            # Track positives per batch
-            batch_fraud_counts.append(int(batch_y.sum().item()))
-
             optimizer.zero_grad(set_to_none=True)
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
             loss.backward()
+
+            # Gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            total_train_loss += float(loss.detach().cpu())
+            total_train_loss += loss.item()
             train_preds_list.append(torch.sigmoid(outputs).detach())
             train_targets_list.append(batch_y)
 
-        avg_train_loss = total_train_loss / max(1, len(train_loader))
+        avg_train_loss = total_train_loss / len(train_loader)
 
-        # ---- Validate ----
+        # Validation phase
         model.eval()
         total_val_loss = 0.0
         val_preds_list, val_targets_list = [], []
+
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
                 batch_x = batch_x.to(device, non_blocking=True)
@@ -423,25 +387,25 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
                 outputs = model(batch_x)
                 loss = criterion(outputs, batch_y)
 
-                total_val_loss += float(loss.detach().cpu())
+                total_val_loss += loss.item()
                 val_preds_list.append(torch.sigmoid(outputs))
                 val_targets_list.append(batch_y)
 
-        avg_val_loss = total_val_loss / max(1, len(val_loader))
+        avg_val_loss = total_val_loss / len(val_loader)
 
-        # ---- Metrics
-        train_preds = torch.cat(train_preds_list).cpu().numpy().ravel()
-        train_targets = torch.cat(train_targets_list).cpu().numpy().ravel()
-        val_preds = torch.cat(val_preds_list).cpu().numpy().ravel()
-        val_targets = torch.cat(val_targets_list).cpu().numpy().ravel()
+        # Calculate metrics
+        train_preds = torch.cat(train_preds_list).cpu().numpy().flatten()
+        train_targets = torch.cat(train_targets_list).cpu().numpy().flatten()
+        val_preds = torch.cat(val_preds_list).cpu().numpy().flatten()
+        val_targets = torch.cat(val_targets_list).cpu().numpy().flatten()
 
-        train_auc = roc_auc_score(train_targets, train_preds) if np.unique(train_targets).size > 1 else np.nan
-        val_auc = roc_auc_score(val_targets, val_preds) if np.unique(val_targets).size > 1 else np.nan
+        train_auc = roc_auc_score(train_targets, train_preds)
+        val_auc = roc_auc_score(val_targets, val_preds)
 
         train_f1 = f1_score(train_targets, (train_preds >= 0.5).astype(int), zero_division=0)
         val_f1 = f1_score(val_targets, (val_preds >= 0.5).astype(int), zero_division=0)
 
-        scheduler.step(val_auc if np.isfinite(val_auc) else 0.0)
+        scheduler.step(val_auc)
 
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
@@ -451,22 +415,14 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         history['val_f1'].append(val_f1)
 
         epoch_pbar.set_postfix({
-            'train_loss': f'{avg_train_loss:.4f}',
-            'val_loss': f'{avg_val_loss:.4f}',
             'train_auc': f'{train_auc:.4f}',
-            'val_auc': f'{val_auc:.4f}'
+            'val_auc': f'{val_auc:.4f}',
         })
 
-        # Optional: log batch positive consistency
-        if batch_fraud_counts:
-            logger.info(f"Batch fraud consistency — mean: {np.mean(batch_fraud_counts):.2f}, "
-                        f"std: {np.std(batch_fraud_counts):.2f}")
-
         logger.info(f"Epoch {epoch + 1}/{epochs} — "
-                    f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
                     f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
-        if early_stopping(val_auc if np.isfinite(val_auc) else -1e9, model):
+        if early_stopping(val_auc, model):
             logger.info(f"Early stopping at epoch {epoch + 1}")
             break
 
@@ -689,56 +645,69 @@ def train_embeddings_streaming_approach(
     return node_embeddings
 
 
-def get_embedding_tensor(embedding_dict, max_node_id, rand_scale=0.02):
-    """Convert embedding dictionary to tensor."""
+def get_embedding_tensor(embedding_dict, max_node_id):
+    """Convert embedding dictionary to tensor with mean initialization for missing nodes."""
+    if not embedding_dict:
+        raise ValueError("Empty embedding dictionary")
+
     dim = len(next(iter(embedding_dict.values())))
     emb = torch.zeros((max_node_id + 1, dim), dtype=torch.float32)
 
+    # Fill known embeddings
     for node_id, vec in embedding_dict.items():
         if node_id <= max_node_id:
             emb[node_id] = torch.tensor(vec, dtype=torch.float32)
 
+    # Initialize missing nodes with mean of existing embeddings
     missing_mask = (emb.abs().sum(dim=1) == 0)
     if missing_mask.any():
-        emb[missing_mask] = torch.randn((missing_mask.sum(), dim), dtype=torch.float32) * rand_scale
-
-    # L2 normalize
-    with torch.no_grad():
-        norms = emb.norm(p=2, dim=1, keepdim=True).clamp_min(1e-8)
-        emb = emb / norms
+        filled_embs = emb[~missing_mask]
+        if len(filled_embs) > 0:
+            emb[missing_mask] = filled_embs.mean(dim=0)
 
     logger.info(f"Embedding tensor: shape={emb.shape}, "
-                f"filled={((~missing_mask).sum().item()):,}, "
-                f"random_init={missing_mask.sum().item():,}")
+                f"filled={(~missing_mask).sum().item():,}, "
+                f"missing={missing_mask.sum().item():,}")
     return emb
 
 
 def prepare_node_features(node_features, train_ids, scaler=None):
-    """Prepare and normalize node features."""
-    if scaler is None:
-        scaler = StandardScaler().fit(node_features[train_ids])
+    """Prepare and normalize node features with feature selection and robust scaling."""
+    selected_features = [0, 1, 2, 4, 5, 6, 7, 15]
+    logger.info(f"Using selected features: {selected_features}")
 
-    normalized_features = scaler.transform(node_features)
+    # Feature selection
+    node_features_selected = node_features[:, selected_features]
+
+    if scaler is None:
+        scaler = RobustScaler().fit(node_features_selected[train_ids])
+
+    normalized_features = scaler.transform(node_features_selected)
     feature_tensor = torch.tensor(normalized_features, dtype=torch.float32)
 
-    logger.info(f"Node features: shape={feature_tensor.shape}, fitted on {len(train_ids):,} train nodes")
+    logger.info(f"Optimized features: shape={feature_tensor.shape}, selected={len(selected_features)}, "
+                f"fitted on {len(train_ids):,} train nodes")
     return feature_tensor, scaler
 
 
 def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """Pick the threshold that maximizes F1 score on validation set."""
+    """Pick threshold optimized for fraud detection (favors recall)."""
     unique = np.unique(y_true)
     if unique.size < 2:
-        return 0.5  # fallback when all labels are same
+        return 0.5
 
     precision, recall, thresholds = precision_recall_curve(y_true, y_prob)
 
-    p, r = precision[1:], recall[1:]
-    if thresholds.size == 0:
-        return 0.5
+    # Remove last element to match thresholds length
+    precision, recall = precision[:-1], recall[:-1]
 
-    f1_scores = 2 * p * r / np.clip(p + r, 1e-12, None)
-    best_idx = np.nanargmax(f1_scores)
+    # F-beta score with beta=2 (weights recall 2x more than precision)
+    beta = 2.0
+    f_beta_scores = (1 + beta ** 2) * precision * recall / (
+            beta ** 2 * precision + recall + 1e-12
+    )
+
+    best_idx = np.nanargmax(f_beta_scores)
     return float(thresholds[best_idx])
 
 

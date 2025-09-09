@@ -4,10 +4,8 @@ import os
 import pickle
 import random
 import warnings
-from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Sequence
 
 import math
 import numpy as np
