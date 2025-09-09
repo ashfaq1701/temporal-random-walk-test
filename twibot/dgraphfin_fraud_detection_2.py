@@ -6,7 +6,6 @@ import random
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-
 import math
 import numpy as np
 import pandas as pd
@@ -15,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
-    average_precision_score, precision_recall_curve
+    average_precision_score, precision_recall_curve, roc_curve
 from sklearn.preprocessing import RobustScaler
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset, Sampler
@@ -261,30 +260,27 @@ class BinaryStratifiedBatchSampler(Sampler):
             yield batch
 
 
+
 def get_optimized_loss_function(pos_count, neg_count, device):
-    """Get loss function optimized for 78:1 imbalance."""
-
     imbalance_ratio = neg_count / pos_count
-    logger.info(f"Imbalance ratio: {imbalance_ratio:.1f}:1")
-
-    # Based on analysis: weighted BCE is optimal for 78:1 ratio
     pos_weight = torch.tensor(imbalance_ratio, device=device, dtype=torch.float32)
+    return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    # Slight label smoothing to prevent overconfidence
-    class BCEWithLabelSmoothing(nn.Module):
-        def __init__(self, pos_weight, smoothing=0.01):
-            super().__init__()
-            self.pos_weight = pos_weight
-            self.smoothing = smoothing
 
-        def forward(self, input, target):
-            # Apply label smoothing
-            target_smooth = target * (1 - self.smoothing) + 0.5 * self.smoothing
-            return F.binary_cross_entropy_with_logits(
-                input, target_smooth, pos_weight=self.pos_weight
-            )
+def calculate_gradient_norm(model):
+    total_norm = 0.0
+    param_count = 0
 
-    return BCEWithLabelSmoothing(pos_weight, smoothing=0.01)
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+            param_count += 1
+
+    if param_count == 0:
+        return 0.0
+
+    return total_norm ** 0.5
 
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
@@ -293,11 +289,11 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
     model = model.to(device)
 
     # Optimized optimizer settings
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
 
     # More aggressive scheduling since we have good features now
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=3, factor=0.8, min_lr=1e-6
+        optimizer, mode='max', patience=5, factor=0.7, min_lr=1e-6
     )
 
     # Get optimized loss function
@@ -364,8 +360,10 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
             loss = criterion(outputs, batch_y)
             loss.backward()
 
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm = calculate_gradient_norm(model)
+            if grad_norm > 1.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
             total_train_loss += loss.item()
@@ -691,24 +689,12 @@ def prepare_node_features(node_features, train_ids, scaler=None):
 
 
 def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """Pick threshold optimized for fraud detection (favors recall)."""
-    unique = np.unique(y_true)
-    if unique.size < 2:
-        return 0.5
-
-    precision, recall, thresholds = precision_recall_curve(y_true, y_prob)
-
-    # Remove last element to match thresholds length
-    precision, recall = precision[:-1], recall[:-1]
-
-    # F-beta score with beta=2 (weights recall 2x more than precision)
-    beta = 2.0
-    f_beta_scores = (1 + beta ** 2) * precision * recall / (
-            beta ** 2 * precision + recall + 1e-12
-    )
-
-    best_idx = np.nanargmax(f_beta_scores)
-    return float(thresholds[best_idx])
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    tnr = 1 - fpr
+    gmean_scores = np.sqrt(tpr * tnr)
+    best_idx = np.argmax(gmean_scores)
+    best_threshold = thresholds[best_idx]
+    return float(best_threshold)
 
 
 def evaluate_fraud_detection(
@@ -845,7 +831,7 @@ def run_fraud_detection_experiments(
     results = {}
 
     logger.info("=" * 60)
-    logger.info("TRAINING FRAUD DETECTION MODEL (Attention-based Fusion)")
+    logger.info("TRAINING FRAUD DETECTION MODEL")
     logger.info("=" * 60)
 
     for run in range(n_runs):
@@ -870,7 +856,7 @@ def run_fraud_detection_experiments(
                 results[key] = []
             results[key].append(current_results[key])
 
-    logger.info(f"\nFraud Detection Results (Attention-based Fusion):")
+    logger.info(f"\nFraud Detection Results:")
     logger.info("=" * 80)
 
     for metric in ['auc', 'ap', 'accuracy', 'precision', 'recall', 'f1_score']:
