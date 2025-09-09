@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
     average_precision_score, precision_recall_curve, roc_curve
@@ -669,25 +668,6 @@ def get_embedding_tensor(embedding_dict, max_node_id):
     return emb
 
 
-def prepare_node_features(node_features, train_ids, scaler=None):
-    """Prepare and normalize node features with feature selection and robust scaling."""
-    selected_features = [0, 1, 2, 4, 5, 6, 7, 15]
-    logger.info(f"Using selected features: {selected_features}")
-
-    # Feature selection
-    node_features_selected = node_features[:, selected_features]
-
-    if scaler is None:
-        scaler = RobustScaler().fit(node_features_selected[train_ids])
-
-    normalized_features = scaler.transform(node_features_selected)
-    feature_tensor = torch.tensor(normalized_features, dtype=torch.float32)
-
-    logger.info(f"Optimized features: shape={feature_tensor.shape}, selected={len(selected_features)}, "
-                f"fitted on {len(train_ids):,} train nodes")
-    return feature_tensor, scaler
-
-
 def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     fpr, tpr, thresholds = roc_curve(y_true, y_prob)
     tnr = 1 - fpr
@@ -786,8 +766,7 @@ def run_fraud_detection_experiments(
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
-    # Prepare node features
-    node_features_tensor, feature_scaler = prepare_node_features(node_features, train_ids)
+    node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
 
     logger.info("=" * 60)
     logger.info(f"Computing embeddings with {embedding_mode} approach...")
