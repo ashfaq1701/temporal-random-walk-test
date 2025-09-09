@@ -6,6 +6,7 @@ import random
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
+import torch.nn.functional as F
 import math
 import numpy as np
 import pandas as pd
@@ -13,8 +14,7 @@ import torch
 import torch.nn as nn
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
-    average_precision_score, precision_recall_curve, roc_curve
-from sklearn.preprocessing import RobustScaler
+    average_precision_score, roc_curve
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset, Sampler
 from tqdm import tqdm
@@ -127,57 +127,58 @@ class EarlyStopping:
 
 
 class FraudDetectionModel(nn.Module):
-    """Simple MLP optimized for fraud detection based on data analysis."""
-
     def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
         super().__init__()
 
-        # Embedding components
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
         self.node_features = nn.Parameter(node_features_tensor, requires_grad=False)
 
-        # Dimensions
-        embed_dim = node_embeddings_tensor.shape[1]
-        feature_dim = node_features_tensor.shape[1]  # Now 8 instead of 17
+        embed_dim = node_embeddings_tensor.shape[1]  # 128
+        feature_dim = node_features_tensor.shape[1]  # 8 (after your feature selection)
 
-        # Simple concatenation approach (analysis showed attention is overkill)
-        input_dim = embed_dim + feature_dim
+        # Separate normalization for different input types
+        self.embed_norm = nn.BatchNorm1d(embed_dim)
+        self.feature_norm = nn.BatchNorm1d(feature_dim)
 
-        # Optimized architecture based on analysis
+        # Simple projection layers
+        self.embed_proj = nn.Linear(embed_dim, 128)
+        self.feature_proj = nn.Linear(feature_dim, 64)
+
+        # Main classifier - slightly deeper than your original
         self.classifier = nn.Sequential(
-            # Input normalization
-            nn.BatchNorm1d(input_dim),
-
-            # First layer - larger to capture interactions
-            nn.Linear(input_dim, 256),
+            nn.Linear(192, 256),  # 128 + 64 = 192
             nn.ReLU(),
             nn.Dropout(0.3),
 
-            # Second layer
-            nn.Linear(256, 128),
+            nn.Linear(256, 256),  # One extra layer
             nn.ReLU(),
             nn.Dropout(0.2),
 
-            # Third layer
-            nn.Linear(128, 64),
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.1),
 
-            # Output
-            nn.Linear(64, 1)
+            nn.Linear(128, 1)
         )
 
     def forward(self, nodes):
         device = next(self.parameters()).device
         nodes = nodes.to(device)
 
-        # Get embeddings and features
+        # Get inputs
         temp_embed = self.embedding_lookup(nodes)
         static_feat = self.node_features[nodes]
 
-        # Simple concatenation (analysis showed this is sufficient)
-        combined = torch.cat([temp_embed, static_feat], dim=1)
+        # Normalize separately
+        embed_normed = self.embed_norm(temp_embed)
+        feat_normed = self.feature_norm(static_feat)
 
+        # Project to consistent dimensions
+        embed_proj = F.relu(self.embed_proj(embed_normed))
+        feat_proj = F.relu(self.feature_proj(feat_normed))
+
+        # Concatenate and classify
+        combined = torch.cat([embed_proj, feat_proj], dim=1)
         return self.classifier(combined)
 
 
