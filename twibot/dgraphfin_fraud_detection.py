@@ -754,9 +754,9 @@ def evaluate_fraud_detection(
 
 
 def run_fraud_detection_experiments(
-        data_path, is_directed, batch_ts_size, sliding_window_duration,
-        embedding_mode, walk_length, num_walks_per_node, edge_picker,
-        embedding_dim, n_epochs, streaming_embedding_use_gpu,
+        data_path, stored_embedding_file_path, is_directed, batch_ts_size,
+        sliding_window_duration, embedding_mode, walk_length, num_walks_per_node,
+        edge_picker, embedding_dim, n_epochs, streaming_embedding_use_gpu,
         fraud_detection_use_gpu, n_runs, batch_size, word2vec_n_workers,
         word2vec_batch_epochs, output_path
 ):
@@ -785,36 +785,48 @@ def run_fraud_detection_experiments(
     logger.info(f"Computing embeddings with {embedding_mode} approach...")
     logger.info("=" * 60)
 
-    # Train embeddings
-    if embedding_mode == 'streaming':
-        embeddings = train_embeddings_streaming_approach(
-            train_sources=train_sources,
-            train_targets=train_targets,
-            train_timestamps=train_timestamps,
-            batch_ts_size=batch_ts_size,
-            sliding_window_duration=sliding_window_duration,
-            is_directed=is_directed,
-            walk_length=walk_length,
-            num_walks_per_node=num_walks_per_node,
-            edge_picker=edge_picker,
-            embedding_dim=embedding_dim,
-            walk_use_gpu=streaming_embedding_use_gpu,
-            word2vec_n_workers=word2vec_n_workers,
-            batch_epochs=word2vec_batch_epochs
-        )
+    if stored_embedding_file_path is None or not os.path.exists(stored_embedding_file_path):
+        # Train embeddings
+        if embedding_mode == 'streaming':
+            embeddings = train_embeddings_streaming_approach(
+                train_sources=train_sources,
+                train_targets=train_targets,
+                train_timestamps=train_timestamps,
+                batch_ts_size=batch_ts_size,
+                sliding_window_duration=sliding_window_duration,
+                is_directed=is_directed,
+                walk_length=walk_length,
+                num_walks_per_node=num_walks_per_node,
+                edge_picker=edge_picker,
+                embedding_dim=embedding_dim,
+                walk_use_gpu=streaming_embedding_use_gpu,
+                word2vec_n_workers=word2vec_n_workers,
+                batch_epochs=word2vec_batch_epochs
+            )
+        else:
+            embeddings = train_embeddings_full_approach(
+                train_sources=train_sources,
+                train_targets=train_targets,
+                train_timestamps=train_timestamps,
+                is_directed=is_directed,
+                walk_length=walk_length,
+                num_walks_per_node=num_walks_per_node,
+                edge_picker=edge_picker,
+                embedding_dim=embedding_dim,
+                walk_use_gpu=streaming_embedding_use_gpu,
+                word2vec_n_workers=word2vec_n_workers
+            )
+
+        if stored_embedding_file_path is not None:
+            os.makedirs(os.path.dirname(stored_embedding_file_path), exist_ok=True)
+            with open(stored_embedding_file_path, 'wb') as f:
+                pickle.dump(embeddings, f)
+            logger.info(f"Embeddings saved to {stored_embedding_file_path}")
     else:
-        embeddings = train_embeddings_full_approach(
-            train_sources=train_sources,
-            train_targets=train_targets,
-            train_timestamps=train_timestamps,
-            is_directed=is_directed,
-            walk_length=walk_length,
-            num_walks_per_node=num_walks_per_node,
-            edge_picker=edge_picker,
-            embedding_dim=embedding_dim,
-            walk_use_gpu=streaming_embedding_use_gpu,
-            word2vec_n_workers=word2vec_n_workers
-        )
+        logger.info(f"Loading pre-trained embeddings from {stored_embedding_file_path}")
+        with open(stored_embedding_file_path, 'rb') as f:
+            embeddings = pickle.load(f)
+        logger.info(f"Loaded embeddings for {len(embeddings)} nodes")
 
     # Convert embeddings to tensor
     embedding_tensor = get_embedding_tensor(embeddings, max_node_id)
@@ -883,6 +895,8 @@ if __name__ == '__main__':
     # Required arguments
     parser.add_argument('--data_path', type=str, required=True,
                         help='Path to dgraphfin.npz file')
+    parser.add_argument('--stored_embedding_file_path', type=str, default=None,
+                        help='Path of default stored embedding file')
     parser.add_argument('--batch_ts_size', type=int, required=True,
                         help='Time duration per batch for streaming approach')
     parser.add_argument('--sliding_window_duration', type=int, required=True,
@@ -932,6 +946,7 @@ if __name__ == '__main__':
     # Run experiments
     results = run_fraud_detection_experiments(
         data_path=args.data_path,
+        stored_embedding_file_path=args.stored_embedding_file_path,
         is_directed=args.is_directed,
         batch_ts_size=args.batch_ts_size,
         sliding_window_duration=args.sliding_window_duration,
