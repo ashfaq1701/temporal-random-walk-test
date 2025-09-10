@@ -284,7 +284,7 @@ def calculate_gradient_norm(model):
 
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
-                                batch_size, epochs=20, device='cpu', patience=5):
+                                batch_size, epochs=20, device='cpu', patience=10):
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
     model = model.to(device)
 
@@ -687,7 +687,7 @@ def evaluate_fraud_detection(
 
     history = train_fraud_detection_model(
         model, train_ids, train_labels, val_ids, val_labels,
-        batch_size=batch_size, epochs=n_epochs, device=device, patience=5
+        batch_size=batch_size, epochs=n_epochs, device=device, patience=10
     )
 
     # Faster eval without changing metrics
