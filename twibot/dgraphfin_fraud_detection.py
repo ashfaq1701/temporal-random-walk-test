@@ -275,35 +275,10 @@ class BinaryStratifiedBatchSampler(Sampler):
             yield batch
 
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.95, gamma=2.0, pos_weight=None):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.pos_weight = pos_weight
-
-    def forward(self, inputs, targets):
-        # Standard BCE with pos_weight for class imbalance
-        bce_loss = F.binary_cross_entropy_with_logits(
-            inputs, targets, pos_weight=self.pos_weight, reduction='none'
-        )
-
-        # Convert to probabilities (stable)
-        pt = torch.exp(-bce_loss)
-
-        # Apply focal term
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
-
-        return focal_loss.mean()
-
-
-def get_optimized_loss_function(y_train, device):
-    pos_count = int(y_train.sum())
-    neg_count = int(len(y_train) - pos_count)
-
+def get_optimized_loss_function(pos_count, neg_count, device):
     imbalance_ratio = neg_count / pos_count
     pos_weight = torch.tensor(imbalance_ratio, device=device, dtype=torch.float32)
-    return FocalLoss(alpha=0.95, gamma=2.0, pos_weight=pos_weight)
+    return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
 
 def calculate_gradient_norm(model):
