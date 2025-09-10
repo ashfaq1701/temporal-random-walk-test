@@ -786,6 +786,10 @@ def run_fraud_detection_experiments(
     logger.info("=" * 60)
 
     if stored_embedding_file_path is None or not os.path.exists(stored_embedding_file_path):
+        logger.info('Computing embeddings ...')
+        if stored_embedding_file_path is None:
+            logger.info(f'And saving in {stored_embedding_file_path}')
+
         # Train embeddings
         if embedding_mode == 'streaming':
             embeddings = train_embeddings_streaming_approach(
