@@ -259,7 +259,9 @@ class BinaryStratifiedBatchSampler(Sampler):
             yield batch
 
 
-def get_optimized_loss_function(pos_count, neg_count, device):
+def get_optimized_loss_function(y_train, device):
+    pos_count = int(y_train.sum())
+    neg_count = int(len(y_train) - pos_count)
     imbalance_ratio = neg_count / pos_count
     pos_weight = torch.tensor(imbalance_ratio, device=device, dtype=torch.float32)
     return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
