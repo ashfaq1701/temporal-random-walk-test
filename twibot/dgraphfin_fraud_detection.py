@@ -6,17 +6,15 @@ import random
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-
+import torch.nn.functional as F
 import math
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
-    average_precision_score, precision_recall_curve
-from sklearn.preprocessing import StandardScaler
+    average_precision_score, roc_curve
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset, Sampler
 from tqdm import tqdm
@@ -128,79 +126,75 @@ class EarlyStopping:
         return False
 
 
+class ResBlock(nn.Module):
+    def __init__(self, d, p=0.2):
+        super().__init__()
+        self.bn1 = nn.BatchNorm1d(d)
+        self.fc1 = nn.Linear(d, d)
+        self.bn2 = nn.BatchNorm1d(d)
+        self.fc2 = nn.Linear(d, d)
+        self.drop = nn.Dropout(p)
+        self.act  = nn.LeakyReLU(0.1, inplace=True)
+
+    def forward(self, x):
+        r = x
+        x = self.act(self.bn1(x))
+        x = self.drop(self.fc1(x))
+        x = self.act(self.bn2(x))
+        x = self.fc2(x)
+        return self.act(x + r)
+
 class FraudDetectionModel(nn.Module):
-    def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
+    def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor,
+                 proj_dim: int = 128, head_width: int = 256, dropout: float = 0.2, n_blocks: int = 2):
         super().__init__()
 
-        # Embedding components
+        # Frozen lookup; features as buffer so .to(device) moves them
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
-        self.node_features = nn.Parameter(node_features_tensor, requires_grad=False)
+        self.register_buffer("node_features", node_features_tensor, persistent=False)
 
-        # Dimensions
-        embed_dim = node_embeddings_tensor.shape[1]
-        feature_dim = node_features_tensor.shape[1]
+        e_dim = int(node_embeddings_tensor.shape[1])   # 128
+        f_dim = int(node_features_tensor.shape[1])      # 8 (after your pruning)
 
-        # Feature normalization
-        self.feature_norm = nn.LayerNorm(feature_dim)
-        self.embed_norm = nn.LayerNorm(embed_dim)
+        # Per-branch BN + projection + LeakyReLU
+        self.emb_bn   = nn.BatchNorm1d(e_dim)
+        self.feat_bn  = nn.BatchNorm1d(f_dim)
+        self.emb_proj = nn.Linear(e_dim, proj_dim)
+        self.feat_proj= nn.Linear(f_dim, proj_dim)
+        self.act      = nn.LeakyReLU(0.1, inplace=True)
 
-        # Attention-based fusion architecture
-        hidden_dim = 128
-        self.temp_proj = nn.Linear(embed_dim, hidden_dim)
-        self.feat_proj = nn.Linear(feature_dim, hidden_dim)
+        # Fuse [e, x, e⊙x, cos(e,x)] → head_width
+        self.fuse = nn.Linear(proj_dim*3 + 1, head_width)
 
-        # Multi-head attention for feature fusion
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=4,
-            batch_first=True,
-            dropout=0.1
-        )
+        # Residual head
+        blocks = [ResBlock(head_width, p=dropout) for _ in range(n_blocks)]
+        self.blocks = nn.Sequential(*blocks)
 
-        # Classification head
-        self.fusion_fc1 = nn.Linear(hidden_dim, 64)
-        self.fusion_fc2 = nn.Linear(64, 32)
-        self.fusion_fc3 = nn.Linear(32, 16)
-        self.fc_out = nn.Linear(16, 1)
+        self.pre_out_bn  = nn.BatchNorm1d(head_width)
+        self.pre_out_act = nn.LeakyReLU(0.1, inplace=True)
 
-        self.dropout = nn.Dropout(0.15)
+        # Weight-normalized output for crisper margins (better AUC)
+        self.fc_out = nn.utils.parametrizations.weight_norm(nn.Linear(head_width, 1))
 
-    def forward(self, nodes):
-        device = next(self.parameters()).device
-        nodes = nodes.to(device)
+    def forward(self, nodes: torch.Tensor):
+        dev = next(self.parameters()).device
+        nodes = nodes.to(dev)
 
-        # Get temporal embeddings and static features
-        temp_embed = self.embedding_lookup(nodes)
-        static_feat = self.node_features[nodes]
+        e = self.embedding_lookup(nodes)      # [B, 128]
+        x = self.node_features[nodes]         # [B, 8]
 
-        # Normalize inputs
-        temp_embed = self.embed_norm(temp_embed)
-        static_feat = self.feature_norm(static_feat)
+        # Per-branch normalize & project
+        e = self.act(self.emb_proj(self.emb_bn(e)))     # [B, P]
+        x = self.act(self.feat_proj(self.feat_bn(x)))   # [B, P]
 
-        # Project to common dimension
-        temp_proj = self.temp_proj(temp_embed).unsqueeze(1)  # [batch, 1, hidden_dim]
-        feat_proj = self.feat_proj(static_feat).unsqueeze(1)  # [batch, 1, hidden_dim]
+        inter = e * x                                   # Hadamard interaction
+        cos   = F.cosine_similarity(e, x, dim=1, eps=1e-8).unsqueeze(1)  # [B,1]
 
-        # Stack for attention mechanism
-        stacked = torch.cat([temp_proj, feat_proj], dim=1)  # [batch, 2, hidden_dim]
-
-        # Self-attention to learn feature interactions
-        attended, attention_weights = self.attention(stacked, stacked, stacked)
-
-        # Aggregate attended features (weighted average)
-        pooled = attended.mean(dim=1)  # [batch, hidden_dim]
-
-        # Classification layers with residual connection
-        x = F.relu(self.fusion_fc1(pooled))
-        x = self.dropout(x)
-
-        x_res = F.relu(self.fusion_fc2(x))
-        x_res = self.dropout(x_res)
-
-        x = F.relu(self.fusion_fc3(x_res))
-        x = self.dropout(x)
-
-        return self.fc_out(x)
+        z = torch.cat([e, x, inter, cos], dim=1)        # [B, 3P+1]
+        h = self.fuse(z)                                # [B, W]
+        h = self.blocks(h)
+        h = self.pre_out_act(self.pre_out_bn(h))
+        return self.fc_out(h)                           # [B,1] logits
 
 
 class BinaryStratifiedBatchSampler(Sampler):
@@ -209,6 +203,7 @@ class BinaryStratifiedBatchSampler(Sampler):
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
         self.seed = seed
+        self._epoch = 0
 
         # 1) Separate class item indices (0 vs 1)
         if hasattr(labels, "detach"):  # torch.Tensor
@@ -225,13 +220,18 @@ class BinaryStratifiedBatchSampler(Sampler):
         self.n1_per_batch = int(round(self.batch_size * p1))
         self.n0_per_batch = self.batch_size - self.n1_per_batch
 
+    def set_epoch(self, epoch: int):
+        self._epoch = epoch
+
     def __len__(self):
         total = len(self.idx0) + len(self.idx1)
         return math.ceil(total / self.batch_size)
 
     def _rng(self):
         r = random.Random()
-        r.seed(0 if self.seed is None else int(self.seed))
+        base = 0 if self.seed is None else int(self.seed)  # Set a default seed
+        epoch = getattr(self, "_epoch", 0)
+        r.seed(base + epoch)
         return r
 
     def __iter__(self):
@@ -276,54 +276,71 @@ class BinaryStratifiedBatchSampler(Sampler):
 
 
 class FocalLoss(nn.Module):
-    """Focal Loss for addressing class imbalance - focuses learning on hard examples."""
-
-    def __init__(self, alpha=1.0, gamma=2.0, reduction='mean'):
+    def __init__(self, alpha=0.95, gamma=2.0, pos_weight=None):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
-        self.reduction = reduction
+        self.pos_weight = pos_weight
 
     def forward(self, inputs, targets):
-        # Apply sigmoid to get probabilities
-        probs = torch.sigmoid(inputs)
+        # Standard BCE with pos_weight for class imbalance
+        bce_loss = F.binary_cross_entropy_with_logits(
+            inputs, targets, pos_weight=self.pos_weight, reduction='none'
+        )
 
-        # Calculate focal loss components
-        ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        p_t = probs * targets + (1 - probs) * (1 - targets)
-        focal_weight = (1 - p_t) ** self.gamma
+        # Convert to probabilities (stable)
+        pt = torch.exp(-bce_loss)
 
-        if self.alpha >= 0:
-            alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-            focal_loss = alpha_t * focal_weight * ce_loss
-        else:
-            focal_loss = focal_weight * ce_loss
+        # Apply focal term
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
 
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
+        return focal_loss.mean()
+
+
+def get_optimized_loss_function(y_train, device):
+    pos_count = int(y_train.sum())
+    neg_count = int(len(y_train) - pos_count)
+
+    imbalance_ratio = neg_count / pos_count
+    pos_weight = torch.tensor(imbalance_ratio, device=device, dtype=torch.float32)
+    return FocalLoss(alpha=0.95, gamma=2.0, pos_weight=pos_weight)
+
+
+def calculate_gradient_norm(model):
+    total_norm = 0.0
+    param_count = 0
+
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+            param_count += 1
+
+    if param_count == 0:
+        return 0.0
+
+    return total_norm ** 0.5
 
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
                                 batch_size, epochs=20, device='cpu', patience=5):
-    """Train fraud detection model with stratified batching (no drop_last)."""
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
     model = model.to(device)
 
-    # Optimizer & scheduler
-    optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-3, weight_decay=1e-4)
+    # Optimized optimizer settings
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
+
+    # More aggressive scheduling since we have good features now
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=3, factor=0.5, min_lr=1e-6
+        optimizer, mode='max', patience=5, factor=0.7, min_lr=1e-6
     )
 
-    criterion = FocalLoss(alpha=0.75, gamma=3.0, reduction='mean')
+    # Get optimized loss function
+    criterion = get_optimized_loss_function(y_train, device)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
-    # Datasets
+    # Datasets with optimized batch size
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.long),
         torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
@@ -333,70 +350,70 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
     )
 
-    # ---- Samplers / Loaders
-    num_workers = min(8, os.cpu_count() or 0)
-    use_workers = num_workers > 0
+    # Optimized batch size for better fraud representation
+    optimal_batch_size = min(batch_size, 96)  # Ensure ~1-2 fraud per batch
 
-    # Use the simple StratifiedBatchSampler you just created (no drop_last arg)
-    train_sampler = BinaryStratifiedBatchSampler(y_train, batch_size=128, shuffle=True, seed=42)
+    num_workers = min(4, os.cpu_count() or 0)  # Reduced for stability
+
+    train_sampler = BinaryStratifiedBatchSampler(
+        y_train, batch_size=optimal_batch_size, shuffle=True, seed=42
+    )
 
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=use_workers
+        persistent_workers=(num_workers > 0)
     )
 
-    # Validation: plain sequential loader (no stratification)
     val_loader = DataLoader(
         val_dataset,
-        batch_size=min(batch_size * 4, 2048),
+        batch_size=optimal_batch_size * 4,
         shuffle=False,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=use_workers
+        persistent_workers=(num_workers > 0)
     )
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': [], 'train_f1': [], 'val_f1': []}
-    logger.info(f"Training with {len(train_loader)} stratified batches per epoch")
+
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
 
     for epoch in epoch_pbar:
-        # (optional) deterministic reshuffle per epoch
-        if hasattr(train_sampler, "set_epoch"):
-            train_sampler.set_epoch(epoch)
-
-        # ---- Train ----
+        # Training phase
         model.train()
+        train_sampler.set_epoch(epoch)
+
         total_train_loss = 0.0
         train_preds_list, train_targets_list = [], []
-        batch_fraud_counts = []
 
         for batch_x, batch_y in train_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
-            # Track positives per batch
-            batch_fraud_counts.append(int(batch_y.sum().item()))
-
             optimizer.zero_grad(set_to_none=True)
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            grad_norm = calculate_gradient_norm(model)
+            if grad_norm > 1.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
-            total_train_loss += float(loss.detach().cpu())
+            total_train_loss += loss.item()
             train_preds_list.append(torch.sigmoid(outputs).detach())
             train_targets_list.append(batch_y)
 
-        avg_train_loss = total_train_loss / max(1, len(train_loader))
+        avg_train_loss = total_train_loss / len(train_loader)
 
-        # ---- Validate ----
+        # Validation phase
         model.eval()
         total_val_loss = 0.0
         val_preds_list, val_targets_list = [], []
+
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
                 batch_x = batch_x.to(device, non_blocking=True)
@@ -405,25 +422,25 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
                 outputs = model(batch_x)
                 loss = criterion(outputs, batch_y)
 
-                total_val_loss += float(loss.detach().cpu())
+                total_val_loss += loss.item()
                 val_preds_list.append(torch.sigmoid(outputs))
                 val_targets_list.append(batch_y)
 
-        avg_val_loss = total_val_loss / max(1, len(val_loader))
+        avg_val_loss = total_val_loss / len(val_loader)
 
-        # ---- Metrics
-        train_preds = torch.cat(train_preds_list).cpu().numpy().ravel()
-        train_targets = torch.cat(train_targets_list).cpu().numpy().ravel()
-        val_preds = torch.cat(val_preds_list).cpu().numpy().ravel()
-        val_targets = torch.cat(val_targets_list).cpu().numpy().ravel()
+        # Calculate metrics
+        train_preds = torch.cat(train_preds_list).cpu().numpy().flatten()
+        train_targets = torch.cat(train_targets_list).cpu().numpy().flatten()
+        val_preds = torch.cat(val_preds_list).cpu().numpy().flatten()
+        val_targets = torch.cat(val_targets_list).cpu().numpy().flatten()
 
-        train_auc = roc_auc_score(train_targets, train_preds) if np.unique(train_targets).size > 1 else np.nan
-        val_auc = roc_auc_score(val_targets, val_preds) if np.unique(val_targets).size > 1 else np.nan
+        train_auc = roc_auc_score(train_targets, train_preds)
+        val_auc = roc_auc_score(val_targets, val_preds)
 
         train_f1 = f1_score(train_targets, (train_preds >= 0.5).astype(int), zero_division=0)
         val_f1 = f1_score(val_targets, (val_preds >= 0.5).astype(int), zero_division=0)
 
-        scheduler.step(val_auc if np.isfinite(val_auc) else 0.0)
+        scheduler.step(val_auc)
 
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
@@ -433,22 +450,14 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         history['val_f1'].append(val_f1)
 
         epoch_pbar.set_postfix({
-            'train_loss': f'{avg_train_loss:.4f}',
-            'val_loss': f'{avg_val_loss:.4f}',
             'train_auc': f'{train_auc:.4f}',
-            'val_auc': f'{val_auc:.4f}'
+            'val_auc': f'{val_auc:.4f}',
         })
 
-        # Optional: log batch positive consistency
-        if batch_fraud_counts:
-            logger.info(f"Batch fraud consistency — mean: {np.mean(batch_fraud_counts):.2f}, "
-                        f"std: {np.std(batch_fraud_counts):.2f}")
-
         logger.info(f"Epoch {epoch + 1}/{epochs} — "
-                    f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
                     f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
 
-        if early_stopping(val_auc if np.isfinite(val_auc) else -1e9, model):
+        if early_stopping(val_auc, model):
             logger.info(f"Early stopping at epoch {epoch + 1}")
             break
 
@@ -671,57 +680,39 @@ def train_embeddings_streaming_approach(
     return node_embeddings
 
 
-def get_embedding_tensor(embedding_dict, max_node_id, rand_scale=0.02):
-    """Convert embedding dictionary to tensor."""
+def get_embedding_tensor(embedding_dict, max_node_id):
+    """Convert embedding dictionary to tensor with mean initialization for missing nodes."""
+    if not embedding_dict:
+        raise ValueError("Empty embedding dictionary")
+
     dim = len(next(iter(embedding_dict.values())))
     emb = torch.zeros((max_node_id + 1, dim), dtype=torch.float32)
 
+    # Fill known embeddings
     for node_id, vec in embedding_dict.items():
         if node_id <= max_node_id:
             emb[node_id] = torch.tensor(vec, dtype=torch.float32)
 
+    # Initialize missing nodes with mean of existing embeddings
     missing_mask = (emb.abs().sum(dim=1) == 0)
     if missing_mask.any():
-        emb[missing_mask] = torch.randn((missing_mask.sum(), dim), dtype=torch.float32) * rand_scale
-
-    # L2 normalize
-    with torch.no_grad():
-        norms = emb.norm(p=2, dim=1, keepdim=True).clamp_min(1e-8)
-        emb = emb / norms
+        filled_embs = emb[~missing_mask]
+        if len(filled_embs) > 0:
+            emb[missing_mask] = filled_embs.mean(dim=0)
 
     logger.info(f"Embedding tensor: shape={emb.shape}, "
-                f"filled={((~missing_mask).sum().item()):,}, "
-                f"random_init={missing_mask.sum().item():,}")
+                f"filled={(~missing_mask).sum().item():,}, "
+                f"missing={missing_mask.sum().item():,}")
     return emb
 
 
-def prepare_node_features(node_features, train_ids, scaler=None):
-    """Prepare and normalize node features."""
-    if scaler is None:
-        scaler = StandardScaler().fit(node_features[train_ids])
-
-    normalized_features = scaler.transform(node_features)
-    feature_tensor = torch.tensor(normalized_features, dtype=torch.float32)
-
-    logger.info(f"Node features: shape={feature_tensor.shape}, fitted on {len(train_ids):,} train nodes")
-    return feature_tensor, scaler
-
-
 def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    """Pick the threshold that maximizes F1 score on validation set."""
-    unique = np.unique(y_true)
-    if unique.size < 2:
-        return 0.5  # fallback when all labels are same
-
-    precision, recall, thresholds = precision_recall_curve(y_true, y_prob)
-
-    p, r = precision[1:], recall[1:]
-    if thresholds.size == 0:
-        return 0.5
-
-    f1_scores = 2 * p * r / np.clip(p + r, 1e-12, None)
-    best_idx = np.nanargmax(f1_scores)
-    return float(thresholds[best_idx])
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    tnr = 1 - fpr
+    gmean_scores = np.sqrt(tpr * tnr)
+    best_idx = np.argmax(gmean_scores)
+    best_threshold = thresholds[best_idx]
+    return float(best_threshold)
 
 
 def evaluate_fraud_detection(
@@ -813,8 +804,7 @@ def run_fraud_detection_experiments(
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
-    # Prepare node features
-    node_features_tensor, feature_scaler = prepare_node_features(node_features, train_ids)
+    node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
 
     logger.info("=" * 60)
     logger.info(f"Computing embeddings with {embedding_mode} approach...")
@@ -858,7 +848,7 @@ def run_fraud_detection_experiments(
     results = {}
 
     logger.info("=" * 60)
-    logger.info("TRAINING FRAUD DETECTION MODEL (Attention-based Fusion)")
+    logger.info("TRAINING FRAUD DETECTION MODEL")
     logger.info("=" * 60)
 
     for run in range(n_runs):
@@ -883,7 +873,7 @@ def run_fraud_detection_experiments(
                 results[key] = []
             results[key].append(current_results[key])
 
-    logger.info(f"\nFraud Detection Results (Attention-based Fusion):")
+    logger.info(f"\nFraud Detection Results:")
     logger.info("=" * 80)
 
     for metric in ['auc', 'ap', 'accuracy', 'precision', 'recall', 'f1_score']:

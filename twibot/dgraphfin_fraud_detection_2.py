@@ -127,58 +127,57 @@ class EarlyStopping:
 
 
 class FraudDetectionModel(nn.Module):
+    """Simple MLP optimized for fraud detection based on data analysis."""
+
     def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor):
         super().__init__()
 
+        # Embedding components
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
         self.node_features = nn.Parameter(node_features_tensor, requires_grad=False)
 
-        embed_dim = node_embeddings_tensor.shape[1]  # 128
-        feature_dim = node_features_tensor.shape[1]  # 8 (after your feature selection)
+        # Dimensions
+        embed_dim = node_embeddings_tensor.shape[1]
+        feature_dim = node_features_tensor.shape[1]  # Now 8 instead of 17
 
-        # Separate normalization for different input types
-        self.embed_norm = nn.BatchNorm1d(embed_dim)
-        self.feature_norm = nn.BatchNorm1d(feature_dim)
+        # Simple concatenation approach (analysis showed attention is overkill)
+        input_dim = embed_dim + feature_dim
 
-        # Simple projection layers
-        self.embed_proj = nn.Linear(embed_dim, 128)
-        self.feature_proj = nn.Linear(feature_dim, 64)
-
-        # Main classifier - slightly deeper than your original
+        # Optimized architecture based on analysis
         self.classifier = nn.Sequential(
-            nn.Linear(192, 256),  # 128 + 64 = 192
+            # Input normalization
+            nn.BatchNorm1d(input_dim),
+
+            # First layer - larger to capture interactions
+            nn.Linear(input_dim, 256),
             nn.ReLU(),
             nn.Dropout(0.3),
 
-            nn.Linear(256, 256),  # One extra layer
+            # Second layer
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.2),
 
-            nn.Linear(256, 128),
+            # Third layer
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(0.1),
 
-            nn.Linear(128, 1)
+            # Output
+            nn.Linear(64, 1)
         )
 
     def forward(self, nodes):
         device = next(self.parameters()).device
         nodes = nodes.to(device)
 
-        # Get inputs
+        # Get embeddings and features
         temp_embed = self.embedding_lookup(nodes)
         static_feat = self.node_features[nodes]
 
-        # Normalize separately
-        embed_normed = self.embed_norm(temp_embed)
-        feat_normed = self.feature_norm(static_feat)
+        # Simple concatenation (analysis showed this is sufficient)
+        combined = torch.cat([temp_embed, static_feat], dim=1)
 
-        # Project to consistent dimensions
-        embed_proj = F.relu(self.embed_proj(embed_normed))
-        feat_proj = F.relu(self.feature_proj(feat_normed))
-
-        # Concatenate and classify
-        combined = torch.cat([embed_proj, feat_proj], dim=1)
         return self.classifier(combined)
 
 
@@ -260,11 +259,35 @@ class BinaryStratifiedBatchSampler(Sampler):
             yield batch
 
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.95, gamma=2.0, pos_weight=None):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.pos_weight = pos_weight
 
-def get_optimized_loss_function(pos_count, neg_count, device):
+    def forward(self, inputs, targets):
+        # Standard BCE with pos_weight for class imbalance
+        bce_loss = F.binary_cross_entropy_with_logits(
+            inputs, targets, pos_weight=self.pos_weight, reduction='none'
+        )
+
+        # Convert to probabilities (stable)
+        pt = torch.exp(-bce_loss)
+
+        # Apply focal term
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+
+        return focal_loss.mean()
+
+
+def get_optimized_loss_function(y_train, device):
+    pos_count = int(y_train.sum())
+    neg_count = int(len(y_train) - pos_count)
+
     imbalance_ratio = neg_count / pos_count
     pos_weight = torch.tensor(imbalance_ratio, device=device, dtype=torch.float32)
-    return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    return FocalLoss(alpha=0.95, gamma=2.0, pos_weight=pos_weight)
 
 
 def calculate_gradient_norm(model):
@@ -297,9 +320,7 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
     )
 
     # Get optimized loss function
-    pos = int(y_train.sum())
-    neg = int(len(y_train) - pos)
-    criterion = get_optimized_loss_function(pos, neg, device)
+    criterion = get_optimized_loss_function(y_train, device)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
