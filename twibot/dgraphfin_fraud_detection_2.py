@@ -96,34 +96,57 @@ def load_dgraphfin_data(data_path):
 
 
 class EarlyStopping:
-    """Early stopping callback to prevent overfitting."""
 
-    def __init__(self, mode='min', patience=5, min_delta=0.0001, restore_best_weights=True):
+    def __init__(self, mode='min', patience=5, min_delta=1e-4, restore_best_weights=True):
         assert mode in ['min', 'max']
         self.mode = mode
-        self.patience = patience
-        self.min_delta = min_delta
-        self.restore_best_weights = restore_best_weights
-        self.best_score = float('inf') if mode == 'min' else -float('inf')
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.restore_best_weights = bool(restore_best_weights)
+        self.reset()
+
+    def reset(self):
+        self.best_score = float('inf') if self.mode == 'min' else -float('inf')
         self.counter = 0
         self.best_weights = None
+        self.best_epoch = -1
+        self.stopped = False
 
-    def __call__(self, current_score, model):
-        improved = (current_score < self.best_score - self.min_delta) if self.mode == 'min' else (
-                current_score > self.best_score + self.min_delta)
+    def _improved(self, score: float) -> bool:
+        # Treat NaN/inf as no improvement
+        if score is None or not np.isfinite(score):
+            return False
+        if self.mode == 'min':
+            return score < (self.best_score - self.min_delta)
+        else:
+            return score > (self.best_score + self.min_delta)
 
-        if improved:
-            self.best_score = current_score
+    def __call__(self, current_score, model, epoch=None):
+        # Cast to float to avoid numpy scalar weirdness
+        score = float(current_score)
+
+        if self._improved(score):
+            self.best_score = score
             self.counter = 0
+            if epoch is not None:
+                self.best_epoch = int(epoch)
             if self.restore_best_weights:
-                self.best_weights = model.state_dict().copy()
+                # Deep copy tensors to CPU to avoid GPU memory growth & aliasing
+                with torch.no_grad():
+                    self.best_weights = {
+                        k: v.detach().cpu().clone()
+                        for k, v in model.state_dict().items()
+                    }
         else:
             self.counter += 1
 
         if self.counter >= self.patience:
+            self.stopped = True
             if self.restore_best_weights and self.best_weights is not None:
-                model.load_state_dict(self.best_weights)
-            return True
+                with torch.no_grad():
+                    model.load_state_dict(self.best_weights)
+            return True  # signal to stop
+
         return False
 
 
@@ -292,70 +315,71 @@ def calculate_gradient_norm(model):
     return total_norm ** 0.5
 
 
+def seed_worker(worker_id: int, base_seed: int = 42):
+    """
+    Deterministic worker seeding for PyTorch DataLoader (spawn-safe on macOS).
+    Use as: worker_init_fn=seed_worker
+    """
+    seed = int(base_seed) + int(worker_id)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
-                                batch_size, epochs=50, device='cpu', patience=5):
+                                batch_size, epochs=50, device='cpu', patience=5,
+                                label_smooth: float = 0.05, schedule_finish_epochs: int = 8,
+                                use_amp: bool = True):  # `use_amp` ignored (no autocast)
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
     model = model.to(device)
 
-    # Optimizer & loss
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=3e-4)
-    criterion = get_optimized_loss_function(y_train, device)  # pos_weight = neg/pos
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-3)
+    criterion = get_optimized_loss_function(y_train, device)  # BCEWithLogits(pos_weight)
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
     # Datasets / loaders
-    train_dataset = TensorDataset(
-        torch.tensor(X_train, dtype=torch.long),
-        torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
-    )
-    val_dataset = TensorDataset(
-        torch.tensor(X_val, dtype=torch.long),
-        torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
-    )
+    train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.long),
+                                  torch.tensor(y_train, dtype=torch.float32).unsqueeze(1))
+    val_dataset   = TensorDataset(torch.tensor(X_val,   dtype=torch.long),
+                                  torch.tensor(y_val,   dtype=torch.float32).unsqueeze(1))
 
-    optimal_batch_size = min(batch_size, 96)  # ~1–2 positives per batch at 78:1
+    optimal_batch_size = min(batch_size, 96)
     num_workers = min(4, os.cpu_count() or 0)
 
-    train_sampler = BinaryStratifiedBatchSampler(
-        y_train, batch_size=optimal_batch_size, shuffle=True, seed=42
-    )
+    # Deterministic workers (seed_worker must be defined at module scope)
+    g = torch.Generator(device='cpu'); g.manual_seed(42)
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_sampler=train_sampler,
-        pin_memory=(device == 'cuda'),
-        num_workers=num_workers,
-        persistent_workers=(num_workers > 0),
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=min(optimal_batch_size * 4, 2048),
-        shuffle=False,
-        pin_memory=(device == 'cuda'),
-        num_workers=num_workers,
-        persistent_workers=(num_workers > 0),
-    )
+    train_sampler = BinaryStratifiedBatchSampler(y_train, batch_size=optimal_batch_size, shuffle=True, seed=42)
+    train_loader = DataLoader(train_dataset, batch_sampler=train_sampler,
+                              pin_memory=(device == 'cuda'), num_workers=num_workers,
+                              persistent_workers=(num_workers > 0),
+                              worker_init_fn=seed_worker, generator=g)
+    val_loader = DataLoader(val_dataset, batch_size=min(optimal_batch_size * 4, 2048),
+                            shuffle=False, pin_memory=(device == 'cuda'), num_workers=num_workers,
+                            persistent_workers=(num_workers > 0),
+                            worker_init_fn=seed_worker, generator=g)
 
-    # Warmup + cosine — **per-batch** stepping (IMPORTANT)
+    # Warmup + cosine; finish decay by schedule_finish_epochs, then hold at final_lr
     warmup_epochs   = 1
     steps_per_epoch = max(1, len(train_loader))
-    total_steps     = max(1, epochs * steps_per_epoch)
+    total_steps     = max(1, min(epochs, schedule_finish_epochs) * steps_per_epoch)
     warmup_steps    = max(1, warmup_epochs * steps_per_epoch)
-    base_lr, final_lr = 1e-4, 3e-6
+    base_lr, final_lr = 1e-4, 1e-6
 
     def lr_lambda(step):
         if step < warmup_steps:
             return (step + 1) / warmup_steps
         t = step - warmup_steps
         T = max(1, total_steps - warmup_steps)
+        if t >= T:
+            return (final_lr / base_lr)          # clamp at floor
         return (final_lr / base_lr) + (1 - final_lr / base_lr) * 0.5 * (1 + math.cos(math.pi * t / T))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': [], 'train_f1': [], 'val_f1': []}
-
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
-    global_step = 0
 
     for epoch in epoch_pbar:
         model.train()
@@ -369,17 +393,20 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
             batch_y = batch_y.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
+
             logits = model(batch_x)
-            loss = criterion(logits, batch_y)
+            # Asymmetric label smoothing: smooth only positives (1 -> 1-ε; 0 stays 0)
+            if label_smooth > 0.0:
+                targets = torch.where(batch_y > 0.5, batch_y * (1.0 - label_smooth), batch_y)
+            else:
+                targets = batch_y
+            loss = criterion(logits, targets)
+
             loss.backward()
-
-            # Simple, cheap clip (returns total norm; no separate pass needed)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            scheduler.step()              # <-- step PER BATCH, NO ARG
-            global_step += 1
 
+            scheduler.step()  # per-batch
             total_train_loss += float(loss.detach().cpu())
             train_probs.append(torch.sigmoid(logits).detach().cpu())
             train_tgts.append(batch_y.detach().cpu())
@@ -394,8 +421,14 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
             for batch_x, batch_y in val_loader:
                 batch_x = batch_x.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
+
                 logits = model(batch_x)
-                vloss = criterion(logits, batch_y)
+                if label_smooth > 0.0:
+                    targets = torch.where(batch_y > 0.5, batch_y * (1.0 - label_smooth), batch_y)
+                else:
+                    targets = batch_y
+                vloss = criterion(logits, targets)
+
                 total_val_loss += float(vloss.detach().cpu())
                 val_probs.append(torch.sigmoid(logits).cpu())
                 val_tgts.append(batch_y.cpu())
@@ -417,18 +450,25 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         history['train_f1'].append(train_f1)
         history['val_f1'].append(val_f1)
 
-        # Optional: show current LR (nice sanity check)
-        epoch_pbar.set_postfix({'train_auc': f'{train_auc:.4f}', 'val_auc': f'{val_auc:.4f}',
+        epoch_pbar.set_postfix({'train_auc': f'{train_auc:.4f}',
+                                'val_auc': f'{val_auc:.4f}',
                                 'lr': f'{scheduler.get_last_lr()[0]:.2e}'})
         logger.info(f"Epoch {epoch + 1}/{epochs} — Train AUC: {train_auc:.4f}, "
                     f"Val AUC: {val_auc:.4f}, LR: {scheduler.get_last_lr()[0]:.2e}")
 
-        if early_stopping(val_auc, model):
+        if early_stopping(val_auc, model, epoch=epoch):
             logger.info(f"Early stopping at epoch {epoch + 1}")
             break
 
         if device == 'cuda':
             torch.cuda.empty_cache()
+
+    # If we never early-stopped, still restore the best snapshot
+    if (early_stopping.restore_best_weights
+            and early_stopping.best_weights is not None
+            and not getattr(early_stopping, "stopped", False)):
+        with torch.no_grad():
+            model.load_state_dict(early_stopping.best_weights)
 
     epoch_pbar.close()
     return history
