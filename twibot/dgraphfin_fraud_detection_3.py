@@ -167,28 +167,35 @@ class ResBlock(nn.Module):
         x = self.fc2(x)
         return self.act(x + r)
 
-class FraudDetectionModel(nn.Module):
-    def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor,
-                 proj_dim: int = 128, head_width: int = 256, dropout: float = 0.30, n_blocks: int = 3):
+class FraudDetectionModelFeaturesOnly(nn.Module):
+    """
+    Feature-only fraud detector (no node embeddings).
+    Expects `nodes` (LongTensor of node IDs) and looks up standardized features
+    from an internal buffer, then applies a LayerNorm MLP head.
+    """
+    def __init__(self, node_features_tensor: torch.Tensor,
+                 proj_dim: int = 128, head_width: int = 256,
+                 dropout: float = 0.30, n_blocks: int = 3):
         super().__init__()
-        self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
+        # Keep features as a buffer so .to(device) moves them with the model
         self.register_buffer("node_features", node_features_tensor, persistent=False)
 
-        e_dim = int(node_embeddings_tensor.shape[1])
         f_dim = int(node_features_tensor.shape[1])
 
-        self.emb_norm  = nn.LayerNorm(e_dim)
+        # Per-branch normalization + projection (BN-free)
         self.feat_norm = nn.LayerNorm(f_dim)
-        self.emb_proj  = nn.Linear(e_dim, proj_dim)
         self.feat_proj = nn.Linear(f_dim, proj_dim)
-        self.proj_drop = nn.Dropout(p=0.10)  # small input dropout
+        self.proj_drop = nn.Dropout(p=0.10)
         self.act       = nn.LeakyReLU(0.1, inplace=True)
 
-        self.fuse = nn.Linear(proj_dim * 3 + 1, head_width)
+        # Fuse -> head
+        self.fuse      = nn.Linear(proj_dim, head_width)
         self.fuse_drop = nn.Dropout(dropout)
 
+        # Deeper residual head (uses your existing ResBlock with LayerNorm)
         self.blocks = nn.Sequential(*[ResBlock(head_width, p=dropout) for _ in range(n_blocks)])
 
+        # Pre-output norm/act and weight-normalized output
         self.pre_out_norm = nn.LayerNorm(head_width)
         self.fc_out = nn.utils.parametrizations.weight_norm(nn.Linear(head_width, 1))
 
@@ -196,21 +203,18 @@ class FraudDetectionModel(nn.Module):
         dev = next(self.parameters()).device
         nodes = nodes.to(dev)
 
-        e = self.embedding_lookup(nodes)
-        x = self.node_features[nodes]
+        # Look up standardized features
+        x = self.node_features[nodes]                # [B, F]
 
-        e = self.act(self.emb_proj(self.emb_norm(e)))
-        x = self.act(self.feat_proj(self.feat_norm(x)))
-        e = self.proj_drop(e); x = self.proj_drop(x)
+        # LN + projection
+        x = self.act(self.feat_proj(self.feat_norm(x)))  # [B, P]
+        x = self.proj_drop(x)
 
-        inter = e * x
-        cos   = F.cosine_similarity(e, x, dim=1, eps=1e-8).unsqueeze(1)
-
-        z = torch.cat([e, x, inter, cos], dim=1)
-        h = self.fuse_drop(self.fuse(z))
+        # Head
+        h = self.fuse_drop(self.fuse(x))             # [B, W]
         h = self.blocks(h)
         h = self.act(self.pre_out_norm(h))
-        return self.fc_out(h)
+        return self.fc_out(h)                        # [B,1] logits
 
 
 class BinaryStratifiedBatchSampler(Sampler):
@@ -728,12 +732,12 @@ def _pick_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
 
 def evaluate_fraud_detection(
         train_ids, train_labels, val_ids, val_labels, test_ids, test_labels,
-        embedding_tensor, node_features_tensor, n_epochs, batch_size, device
+        node_features_tensor, n_epochs, batch_size, device
 ):
     """Evaluate fraud detection performance."""
     logger.info(f"Fraud detection — train: {len(train_ids):,}, val: {len(val_ids):,}, test: {len(test_ids):,}")
 
-    model = FraudDetectionModel(embedding_tensor, node_features_tensor).to(device)
+    model = FraudDetectionModelFeaturesOnly(node_features_tensor).to(device)
 
     history = train_fraud_detection_model(
         model, train_ids, train_labels, val_ids, val_labels,
@@ -798,12 +802,124 @@ def prepare_node_features_all(node_features: np.ndarray,
     return torch.from_numpy(feats)
 
 
+def build_graph_stats_features(edges_df: pd.DataFrame,
+                               n_nodes: int,
+                               recent_window: int = 100) -> np.ndarray:
+    """
+    Build cheap, high-signal graph statistics per node.
+
+    Parameters
+    ----------
+    edges_df : pd.DataFrame
+        Must contain integer columns: 'u' (src), 'i' (dst), 'ts' (timestamp).
+    n_nodes : int
+        Total number of nodes; feature matrix will be [n_nodes, 6].
+    recent_window : int, default 100
+        Edges with ts >= (t_max - recent_window) are considered "recent".
+
+    Returns
+    -------
+    feats : np.ndarray (float32) of shape [n_nodes, 6]
+        Column order:
+          0: log1p(out_degree_lifetime)
+          1: log1p(in_degree_lifetime)
+          2: log1p(total_degree_lifetime)
+          3: recency in [0,1]  (0 = most recent activity; 1 = oldest/inactive)
+          4: burstiness = recent_degree / max(1, total_degree)
+          5: diversity  = unique_partners / max(1, total_degree)
+    """
+    # Pull columns as contiguous numpy arrays
+    u  = edges_df['u'].to_numpy(dtype=np.int64, copy=False)
+    i  = edges_df['i'].to_numpy(dtype=np.int64, copy=False)
+    ts = edges_df['ts'].to_numpy(dtype=np.int64, copy=False)
+
+    # Global time range
+    tmin = int(ts.min()) if ts.size else 0
+    tmax = int(ts.max()) if ts.size else 0
+    span = max(1, tmax - tmin)
+
+    # -------------------------
+    # Lifetime degrees (np.bincount is fast and memory-friendly)
+    # -------------------------
+    deg_out = np.bincount(u, minlength=n_nodes).astype(np.float32)
+    deg_in  = np.bincount(i, minlength=n_nodes).astype(np.float32)
+    total_deg = deg_out + deg_in  # float32
+
+    # -------------------------
+    # Last activity timestamp per node (max over src/dst roles)
+    # (vectorized via pandas groupby once per side for simplicity)
+    # -------------------------
+    last_ts = np.full(n_nodes, -1, dtype=np.int64)  # -1 => inactive by default
+
+    if len(u) > 0:
+        last_u = edges_df.groupby('u')['ts'].max()
+        idx = last_u.index.to_numpy(dtype=np.int64, copy=False)
+        vals = last_u.to_numpy(dtype=np.int64, copy=False)
+        last_ts[idx] = np.maximum(last_ts[idx], vals)
+
+    if len(i) > 0:
+        last_i = edges_df.groupby('i')['ts'].max()
+        idx = last_i.index.to_numpy(dtype=np.int64, copy=False)
+        vals = last_i.to_numpy(dtype=np.int64, copy=False)
+        # np.maximum with fancy indexing to merge dst-side maxima
+        last_ts[idx] = np.maximum(last_ts[idx], vals)
+
+    # Recency: normalized "time since last activity"
+    recency = np.ones(n_nodes, dtype=np.float32)  # default 1.0 for inactive nodes
+    active_mask = last_ts >= tmin
+    if active_mask.any():
+        recency[active_mask] = (tmax - last_ts[active_mask]) / float(span)
+
+    # -------------------------
+    # Recent degrees within a time window
+    # -------------------------
+    cutoff = tmax - int(recent_window)
+    recent_mask = ts >= cutoff
+    if recent_mask.any():
+        deg_out_recent = np.bincount(u[recent_mask], minlength=n_nodes).astype(np.float32)
+        deg_in_recent  = np.bincount(i[recent_mask], minlength=n_nodes).astype(np.float32)
+        recent_deg = deg_out_recent + deg_in_recent
+    else:
+        recent_deg = np.zeros(n_nodes, dtype=np.float32)
+
+    burstiness = recent_deg / np.maximum(1.0, total_deg)
+
+    # -------------------------
+    # Partner diversity: unique neighbors (src: unique dst; dst: unique src)
+    # -------------------------
+    uniq_out = edges_df.groupby('u')['i'].nunique()
+    uniq_in  = edges_df.groupby('i')['u'].nunique()
+
+    uniq_partners = np.zeros(n_nodes, dtype=np.float32)
+    if not uniq_out.empty:
+        idx = uniq_out.index.to_numpy(dtype=np.int64, copy=False)
+        vals = uniq_out.to_numpy(dtype=np.int64, copy=False)
+        uniq_partners[idx] += vals.astype(np.float32)
+    if not uniq_in.empty:
+        idx = uniq_in.index.to_numpy(dtype=np.int64, copy=False)
+        vals = uniq_in.to_numpy(dtype=np.int64, copy=False)
+        uniq_partners[idx] += vals.astype(np.float32)
+
+    diversity = uniq_partners / np.maximum(1.0, total_deg)
+
+    # -------------------------
+    # Assemble feature matrix
+    # -------------------------
+    feats = np.empty((n_nodes, 6), dtype=np.float32)
+    feats[:, 0] = np.log1p(deg_out)     # lifetime out-degree (log1p)
+    feats[:, 1] = np.log1p(deg_in)      # lifetime in-degree  (log1p)
+    feats[:, 2] = np.log1p(total_deg)   # lifetime total-degree (log1p)
+    feats[:, 3] = recency               # 0 new … 1 old/inactive
+    feats[:, 4] = burstiness            # recent / lifetime degree
+    feats[:, 5] = diversity             # unique partners / lifetime degree
+
+    return feats
+
+
 def run_fraud_detection_experiments(
-        data_path, stored_embedding_file_path, is_directed, batch_ts_size,
-        sliding_window_duration, embedding_mode, walk_length, num_walks_per_node,
-        edge_picker, embedding_dim, n_epochs, streaming_embedding_use_gpu,
-        fraud_detection_use_gpu, n_runs, batch_size, word2vec_n_workers,
-        word2vec_batch_epochs, output_path
+        data_path, batch_ts_size, sliding_window_duration, embedding_mode,
+        embedding_dim, n_epochs, fraud_detection_use_gpu, n_runs, batch_size,
+        output_path
 ):
     """Run fraud detection experiments on DGraphFin dataset."""
     logger.info("Starting DGraphFin fraud detection experiments")
@@ -830,66 +946,15 @@ def run_fraud_detection_experiments(
     x[:, heavy] = np.log1p(np.clip(x[:, heavy], 0, None))
     is_zero_F10 = (node_features[:, 10] == 0).astype(np.float32).reshape(-1, 1)
 
+    # 2) graph stats
+    # graph_stats = build_graph_stats_features(edges_df, n_nodes=x.shape[0], recent_window=100)
+
     # 3) concatenate and scale (fit on train_ids inside prepare_node_features_all)
     node_features = np.concatenate([x, is_zero_F10], axis=1).astype(np.float32)
     node_features_tensor = prepare_node_features_all(node_features, train_ids)
 
     # (optional) sanity log
     logger.info(f"Augmented feature dim: {node_features.shape[1]}")
-
-    logger.info("=" * 60)
-    logger.info(f"Computing embeddings with {embedding_mode} approach...")
-    logger.info("=" * 60)
-
-    if stored_embedding_file_path is None or not os.path.exists(stored_embedding_file_path):
-        logger.info('Computing embeddings ...')
-        if stored_embedding_file_path is not None:
-            logger.info(f'And saving in {stored_embedding_file_path}')
-
-        # Train embeddings
-        if embedding_mode == 'streaming':
-            embeddings = train_embeddings_streaming_approach(
-                train_sources=train_sources,
-                train_targets=train_targets,
-                train_timestamps=train_timestamps,
-                batch_ts_size=batch_ts_size,
-                sliding_window_duration=sliding_window_duration,
-                is_directed=is_directed,
-                walk_length=walk_length,
-                num_walks_per_node=num_walks_per_node,
-                edge_picker=edge_picker,
-                embedding_dim=embedding_dim,
-                walk_use_gpu=streaming_embedding_use_gpu,
-                word2vec_n_workers=word2vec_n_workers,
-                batch_epochs=word2vec_batch_epochs
-            )
-        else:
-            embeddings = train_embeddings_full_approach(
-                train_sources=train_sources,
-                train_targets=train_targets,
-                train_timestamps=train_timestamps,
-                is_directed=is_directed,
-                walk_length=walk_length,
-                num_walks_per_node=num_walks_per_node,
-                edge_picker=edge_picker,
-                embedding_dim=embedding_dim,
-                walk_use_gpu=streaming_embedding_use_gpu,
-                word2vec_n_workers=word2vec_n_workers
-            )
-
-        if stored_embedding_file_path is not None:
-            os.makedirs(os.path.dirname(stored_embedding_file_path), exist_ok=True)
-            with open(stored_embedding_file_path, 'wb') as f:
-                pickle.dump(embeddings, f)
-            logger.info(f"Embeddings saved to {stored_embedding_file_path}")
-    else:
-        logger.info(f"Loading pre-trained embeddings from {stored_embedding_file_path}")
-        with open(stored_embedding_file_path, 'rb') as f:
-            embeddings = pickle.load(f)
-        logger.info(f"Loaded embeddings for {len(embeddings)} nodes")
-
-    # Convert embeddings to tensor
-    embedding_tensor = get_embedding_tensor(embeddings, max_node_id)
 
     device = 'cuda' if fraud_detection_use_gpu and torch.cuda.is_available() else 'cpu'
     results = {}
@@ -908,7 +973,6 @@ def run_fraud_detection_experiments(
             val_labels=val_labels,
             test_ids=test_ids,
             test_labels=test_labels,
-            embedding_tensor=embedding_tensor,
             node_features_tensor=node_features_tensor,
             n_epochs=n_epochs,
             batch_size=batch_size,
@@ -1006,21 +1070,13 @@ if __name__ == '__main__':
     # Run experiments
     results = run_fraud_detection_experiments(
         data_path=args.data_path,
-        stored_embedding_file_path=args.stored_embedding_file_path,
-        is_directed=args.is_directed,
         batch_ts_size=args.batch_ts_size,
         sliding_window_duration=args.sliding_window_duration,
         embedding_mode=args.embedding_mode,
-        walk_length=args.walk_length,
-        num_walks_per_node=args.num_walks_per_node,
-        edge_picker=args.edge_picker,
         embedding_dim=args.embedding_dim,
         n_epochs=args.n_epochs,
-        streaming_embedding_use_gpu=args.streaming_embedding_use_gpu,
         fraud_detection_use_gpu=args.fraud_detection_use_gpu,
         n_runs=args.n_runs,
         batch_size=args.batch_size,
-        word2vec_n_workers=args.word2vec_n_workers,
-        word2vec_batch_epochs=args.word2vec_batch_epochs,
         output_path=args.output_path
     )
