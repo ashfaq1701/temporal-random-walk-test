@@ -15,6 +15,7 @@ import torch.nn as nn
 from gensim.models import Word2Vec
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, \
     average_precision_score, roc_curve
+from sklearn.preprocessing import StandardScaler
 from temporal_random_walk import TemporalRandomWalk
 from torch.utils.data import DataLoader, TensorDataset, Sampler
 from tqdm import tqdm
@@ -127,74 +128,66 @@ class EarlyStopping:
 
 
 class ResBlock(nn.Module):
-    def __init__(self, d, p=0.2):
+    def __init__(self, d: int, p: float = 0.30):
         super().__init__()
-        self.bn1 = nn.BatchNorm1d(d)
+        self.n1 = nn.LayerNorm(d)
         self.fc1 = nn.Linear(d, d)
-        self.bn2 = nn.BatchNorm1d(d)
+        self.n2 = nn.LayerNorm(d)
         self.fc2 = nn.Linear(d, d)
         self.drop = nn.Dropout(p)
         self.act  = nn.LeakyReLU(0.1, inplace=True)
-
     def forward(self, x):
         r = x
-        x = self.act(self.bn1(x))
+        x = self.act(self.n1(x))
         x = self.drop(self.fc1(x))
-        x = self.act(self.bn2(x))
+        x = self.act(self.n2(x))
         x = self.fc2(x)
         return self.act(x + r)
 
 class FraudDetectionModel(nn.Module):
     def __init__(self, node_embeddings_tensor: torch.Tensor, node_features_tensor: torch.Tensor,
-                 proj_dim: int = 128, head_width: int = 256, dropout: float = 0.2, n_blocks: int = 2):
+                 proj_dim: int = 128, head_width: int = 256, dropout: float = 0.30, n_blocks: int = 3):
         super().__init__()
-
-        # Frozen lookup; features as buffer so .to(device) moves them
         self.embedding_lookup = nn.Embedding.from_pretrained(node_embeddings_tensor, freeze=True)
         self.register_buffer("node_features", node_features_tensor, persistent=False)
 
-        e_dim = int(node_embeddings_tensor.shape[1])   # 128
-        f_dim = int(node_features_tensor.shape[1])      # 8 (after your pruning)
+        e_dim = int(node_embeddings_tensor.shape[1])
+        f_dim = int(node_features_tensor.shape[1])
 
-        # Per-branch BN + projection + LeakyReLU
-        self.emb_bn   = nn.BatchNorm1d(e_dim)
-        self.feat_bn  = nn.BatchNorm1d(f_dim)
-        self.emb_proj = nn.Linear(e_dim, proj_dim)
-        self.feat_proj= nn.Linear(f_dim, proj_dim)
-        self.act      = nn.LeakyReLU(0.1, inplace=True)
+        self.emb_norm  = nn.LayerNorm(e_dim)
+        self.feat_norm = nn.LayerNorm(f_dim)
+        self.emb_proj  = nn.Linear(e_dim, proj_dim)
+        self.feat_proj = nn.Linear(f_dim, proj_dim)
+        self.proj_drop = nn.Dropout(p=0.10)  # small input dropout
+        self.act       = nn.LeakyReLU(0.1, inplace=True)
 
-        # Fuse [e, x, e⊙x, cos(e,x)] → head_width
-        self.fuse = nn.Linear(proj_dim*3 + 1, head_width)
+        self.fuse = nn.Linear(proj_dim * 3 + 1, head_width)
+        self.fuse_drop = nn.Dropout(dropout)
 
-        # Residual head
-        blocks = [ResBlock(head_width, p=dropout) for _ in range(n_blocks)]
-        self.blocks = nn.Sequential(*blocks)
+        self.blocks = nn.Sequential(*[ResBlock(head_width, p=dropout) for _ in range(n_blocks)])
 
-        self.pre_out_bn  = nn.BatchNorm1d(head_width)
-        self.pre_out_act = nn.LeakyReLU(0.1, inplace=True)
-
-        # Weight-normalized output for crisper margins (better AUC)
+        self.pre_out_norm = nn.LayerNorm(head_width)
         self.fc_out = nn.utils.parametrizations.weight_norm(nn.Linear(head_width, 1))
 
     def forward(self, nodes: torch.Tensor):
         dev = next(self.parameters()).device
         nodes = nodes.to(dev)
 
-        e = self.embedding_lookup(nodes)      # [B, 128]
-        x = self.node_features[nodes]         # [B, 8]
+        e = self.embedding_lookup(nodes)
+        x = self.node_features[nodes]
 
-        # Per-branch normalize & project
-        e = self.act(self.emb_proj(self.emb_bn(e)))     # [B, P]
-        x = self.act(self.feat_proj(self.feat_bn(x)))   # [B, P]
+        e = self.act(self.emb_proj(self.emb_norm(e)))
+        x = self.act(self.feat_proj(self.feat_norm(x)))
+        e = self.proj_drop(e); x = self.proj_drop(x)
 
-        inter = e * x                                   # Hadamard interaction
-        cos   = F.cosine_similarity(e, x, dim=1, eps=1e-8).unsqueeze(1)  # [B,1]
+        inter = e * x
+        cos   = F.cosine_similarity(e, x, dim=1, eps=1e-8).unsqueeze(1)
 
-        z = torch.cat([e, x, inter, cos], dim=1)        # [B, 3P+1]
-        h = self.fuse(z)                                # [B, W]
+        z = torch.cat([e, x, inter, cos], dim=1)
+        h = self.fuse_drop(self.fuse(z))
         h = self.blocks(h)
-        h = self.pre_out_act(self.pre_out_bn(h))
-        return self.fc_out(h)                           # [B,1] logits
+        h = self.act(self.pre_out_norm(h))
+        return self.fc_out(h)
 
 
 class BinaryStratifiedBatchSampler(Sampler):
@@ -300,24 +293,17 @@ def calculate_gradient_norm(model):
 
 
 def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
-                                batch_size, epochs=50, device='cpu', patience=10):
+                                batch_size, epochs=50, device='cpu', patience=5):
     logger.info(f"Training fraud detection model on {len(X_train):,} samples")
     model = model.to(device)
 
-    # Optimized optimizer settings
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
-
-    # More aggressive scheduling since we have good features now
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', patience=5, factor=0.7, min_lr=1e-6
-    )
-
-    # Get optimized loss function
-    criterion = get_optimized_loss_function(y_train, device)
+    # Optimizer & loss
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=3e-4)
+    criterion = get_optimized_loss_function(y_train, device)  # pos_weight = neg/pos
 
     early_stopping = EarlyStopping(mode='max', patience=patience)
 
-    # Datasets with optimized batch size
+    # Datasets / loaders
     train_dataset = TensorDataset(
         torch.tensor(X_train, dtype=torch.long),
         torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
@@ -327,10 +313,8 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
     )
 
-    # Optimized batch size for better fraud representation
-    optimal_batch_size = min(batch_size, 96)  # Ensure ~1-2 fraud per batch
-
-    num_workers = min(4, os.cpu_count() or 0)  # Reduced for stability
+    optimal_batch_size = min(batch_size, 96)  # ~1–2 positives per batch at 78:1
+    num_workers = min(4, os.cpu_count() or 0)
 
     train_sampler = BinaryStratifiedBatchSampler(
         y_train, batch_size=optimal_batch_size, shuffle=True, seed=42
@@ -341,98 +325,103 @@ def train_fraud_detection_model(model, X_train, y_train, X_val, y_val,
         batch_sampler=train_sampler,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=(num_workers > 0),
     )
-
     val_loader = DataLoader(
         val_dataset,
-        batch_size=optimal_batch_size * 4,
+        batch_size=min(optimal_batch_size * 4, 2048),
         shuffle=False,
         pin_memory=(device == 'cuda'),
         num_workers=num_workers,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=(num_workers > 0),
     )
+
+    # Warmup + cosine — **per-batch** stepping (IMPORTANT)
+    warmup_epochs   = 1
+    steps_per_epoch = max(1, len(train_loader))
+    total_steps     = max(1, epochs * steps_per_epoch)
+    warmup_steps    = max(1, warmup_epochs * steps_per_epoch)
+    base_lr, final_lr = 1e-4, 3e-6
+
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        t = step - warmup_steps
+        T = max(1, total_steps - warmup_steps)
+        return (final_lr / base_lr) + (1 - final_lr / base_lr) * 0.5 * (1 + math.cos(math.pi * t / T))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     history = {'train_loss': [], 'val_loss': [], 'train_auc': [], 'val_auc': [], 'train_f1': [], 'val_f1': []}
 
     epoch_pbar = tqdm(range(epochs), desc="Training", unit="epoch")
+    global_step = 0
 
     for epoch in epoch_pbar:
-        # Training phase
         model.train()
         train_sampler.set_epoch(epoch)
 
         total_train_loss = 0.0
-        train_preds_list, train_targets_list = [], []
+        train_probs, train_tgts = [], []
 
         for batch_x, batch_y in train_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y)
+            logits = model(batch_x)
+            loss = criterion(logits, batch_y)
             loss.backward()
 
-            grad_norm = calculate_gradient_norm(model)
-            if grad_norm > 1.0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Simple, cheap clip (returns total norm; no separate pass needed)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
+            scheduler.step()              # <-- step PER BATCH, NO ARG
+            global_step += 1
 
-            total_train_loss += loss.item()
-            train_preds_list.append(torch.sigmoid(outputs).detach())
-            train_targets_list.append(batch_y)
+            total_train_loss += float(loss.detach().cpu())
+            train_probs.append(torch.sigmoid(logits).detach().cpu())
+            train_tgts.append(batch_y.detach().cpu())
 
-        avg_train_loss = total_train_loss / len(train_loader)
+        avg_train_loss = total_train_loss / max(1, len(train_loader))
 
-        # Validation phase
+        # Validation
         model.eval()
         total_val_loss = 0.0
-        val_preds_list, val_targets_list = [], []
-
+        val_probs, val_tgts = [], []
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
                 batch_x = batch_x.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
+                logits = model(batch_x)
+                vloss = criterion(logits, batch_y)
+                total_val_loss += float(vloss.detach().cpu())
+                val_probs.append(torch.sigmoid(logits).cpu())
+                val_tgts.append(batch_y.cpu())
 
-                outputs = model(batch_x)
-                loss = criterion(outputs, batch_y)
+        train_probs = torch.cat(train_probs).numpy().ravel()
+        train_tgts  = torch.cat(train_tgts).numpy().ravel()
+        val_probs   = torch.cat(val_probs).numpy().ravel()
+        val_tgts    = torch.cat(val_tgts).numpy().ravel()
 
-                total_val_loss += loss.item()
-                val_preds_list.append(torch.sigmoid(outputs))
-                val_targets_list.append(batch_y)
-
-        avg_val_loss = total_val_loss / len(val_loader)
-
-        # Calculate metrics
-        train_preds = torch.cat(train_preds_list).cpu().numpy().flatten()
-        train_targets = torch.cat(train_targets_list).cpu().numpy().flatten()
-        val_preds = torch.cat(val_preds_list).cpu().numpy().flatten()
-        val_targets = torch.cat(val_targets_list).cpu().numpy().flatten()
-
-        train_auc = roc_auc_score(train_targets, train_preds)
-        val_auc = roc_auc_score(val_targets, val_preds)
-
-        train_f1 = f1_score(train_targets, (train_preds >= 0.5).astype(int), zero_division=0)
-        val_f1 = f1_score(val_targets, (val_preds >= 0.5).astype(int), zero_division=0)
-
-        scheduler.step(val_auc)
+        train_auc = roc_auc_score(train_tgts, train_probs)
+        val_auc   = roc_auc_score(val_tgts,   val_probs)
+        train_f1  = f1_score(train_tgts, (train_probs>=0.5).astype(int), zero_division=0)
+        val_f1    = f1_score(val_tgts,   (val_probs  >=0.5).astype(int), zero_division=0)
 
         history['train_loss'].append(avg_train_loss)
-        history['val_loss'].append(avg_val_loss)
+        history['val_loss'].append(total_val_loss / max(1, len(val_loader)))
         history['train_auc'].append(train_auc)
         history['val_auc'].append(val_auc)
         history['train_f1'].append(train_f1)
         history['val_f1'].append(val_f1)
 
-        epoch_pbar.set_postfix({
-            'train_auc': f'{train_auc:.4f}',
-            'val_auc': f'{val_auc:.4f}',
-        })
-
-        logger.info(f"Epoch {epoch + 1}/{epochs} — "
-                    f"Train AUC: {train_auc:.4f}, Val AUC: {val_auc:.4f}")
+        # Optional: show current LR (nice sanity check)
+        epoch_pbar.set_postfix({'train_auc': f'{train_auc:.4f}', 'val_auc': f'{val_auc:.4f}',
+                                'lr': f'{scheduler.get_last_lr()[0]:.2e}'})
+        logger.info(f"Epoch {epoch + 1}/{epochs} — Train AUC: {train_auc:.4f}, "
+                    f"Val AUC: {val_auc:.4f}, LR: {scheduler.get_last_lr()[0]:.2e}")
 
         if early_stopping(val_auc, model):
             logger.info(f"Early stopping at epoch {epoch + 1}")
@@ -658,7 +647,7 @@ def train_embeddings_streaming_approach(
 
 
 def get_embedding_tensor(embedding_dict, max_node_id):
-    """Convert embedding dictionary to tensor with mean initialization for missing nodes."""
+    """Convert embedding dictionary to tensor (L2-normalized rows)."""
     if not embedding_dict:
         raise ValueError("Empty embedding dictionary")
 
@@ -670,12 +659,17 @@ def get_embedding_tensor(embedding_dict, max_node_id):
         if node_id <= max_node_id:
             emb[node_id] = torch.tensor(vec, dtype=torch.float32)
 
-    # Initialize missing nodes with mean of existing embeddings
+    # Initialize missing rows with mean of existing embeddings
     missing_mask = (emb.abs().sum(dim=1) == 0)
     if missing_mask.any():
-        filled_embs = emb[~missing_mask]
-        if len(filled_embs) > 0:
-            emb[missing_mask] = filled_embs.mean(dim=0)
+        filled = emb[~missing_mask]
+        if filled.numel() > 0:
+            emb[missing_mask] = filled.mean(dim=0)
+
+    # Row-wise L2 normalization (important for BN/proj stability)
+    with torch.no_grad():
+        norms = emb.norm(p=2, dim=1, keepdim=True).clamp_min_(1e-8)
+        emb.div_(norms)
 
     logger.info(f"Embedding tensor: shape={emb.shape}, "
                 f"filled={(~missing_mask).sum().item():,}, "
@@ -755,6 +749,129 @@ def evaluate_fraud_detection(
     return results
 
 
+
+def prepare_node_features_all(node_features: np.ndarray,
+                              train_ids: np.ndarray) -> torch.Tensor:
+    scaler = StandardScaler()
+    scaler.fit(node_features[train_ids])
+    feats = scaler.transform(node_features).astype(np.float32)
+    return torch.from_numpy(feats)
+
+
+def build_graph_stats_features(edges_df: pd.DataFrame,
+                               n_nodes: int,
+                               recent_window: int = 100) -> np.ndarray:
+    """
+    Build cheap, high-signal graph statistics per node.
+
+    Parameters
+    ----------
+    edges_df : pd.DataFrame
+        Must contain integer columns: 'u' (src), 'i' (dst), 'ts' (timestamp).
+    n_nodes : int
+        Total number of nodes; feature matrix will be [n_nodes, 6].
+    recent_window : int, default 100
+        Edges with ts >= (t_max - recent_window) are considered "recent".
+
+    Returns
+    -------
+    feats : np.ndarray (float32) of shape [n_nodes, 6]
+        Column order:
+          0: log1p(out_degree_lifetime)
+          1: log1p(in_degree_lifetime)
+          2: log1p(total_degree_lifetime)
+          3: recency in [0,1]  (0 = most recent activity; 1 = oldest/inactive)
+          4: burstiness = recent_degree / max(1, total_degree)
+          5: diversity  = unique_partners / max(1, total_degree)
+    """
+    # Pull columns as contiguous numpy arrays
+    u  = edges_df['u'].to_numpy(dtype=np.int64, copy=False)
+    i  = edges_df['i'].to_numpy(dtype=np.int64, copy=False)
+    ts = edges_df['ts'].to_numpy(dtype=np.int64, copy=False)
+
+    # Global time range
+    tmin = int(ts.min()) if ts.size else 0
+    tmax = int(ts.max()) if ts.size else 0
+    span = max(1, tmax - tmin)
+
+    # -------------------------
+    # Lifetime degrees (np.bincount is fast and memory-friendly)
+    # -------------------------
+    deg_out = np.bincount(u, minlength=n_nodes).astype(np.float32)
+    deg_in  = np.bincount(i, minlength=n_nodes).astype(np.float32)
+    total_deg = deg_out + deg_in  # float32
+
+    # -------------------------
+    # Last activity timestamp per node (max over src/dst roles)
+    # (vectorized via pandas groupby once per side for simplicity)
+    # -------------------------
+    last_ts = np.full(n_nodes, -1, dtype=np.int64)  # -1 => inactive by default
+
+    if len(u) > 0:
+        last_u = edges_df.groupby('u')['ts'].max()
+        idx = last_u.index.to_numpy(dtype=np.int64, copy=False)
+        vals = last_u.to_numpy(dtype=np.int64, copy=False)
+        last_ts[idx] = np.maximum(last_ts[idx], vals)
+
+    if len(i) > 0:
+        last_i = edges_df.groupby('i')['ts'].max()
+        idx = last_i.index.to_numpy(dtype=np.int64, copy=False)
+        vals = last_i.to_numpy(dtype=np.int64, copy=False)
+        # np.maximum with fancy indexing to merge dst-side maxima
+        last_ts[idx] = np.maximum(last_ts[idx], vals)
+
+    # Recency: normalized "time since last activity"
+    recency = np.ones(n_nodes, dtype=np.float32)  # default 1.0 for inactive nodes
+    active_mask = last_ts >= tmin
+    if active_mask.any():
+        recency[active_mask] = (tmax - last_ts[active_mask]) / float(span)
+
+    # -------------------------
+    # Recent degrees within a time window
+    # -------------------------
+    cutoff = tmax - int(recent_window)
+    recent_mask = ts >= cutoff
+    if recent_mask.any():
+        deg_out_recent = np.bincount(u[recent_mask], minlength=n_nodes).astype(np.float32)
+        deg_in_recent  = np.bincount(i[recent_mask], minlength=n_nodes).astype(np.float32)
+        recent_deg = deg_out_recent + deg_in_recent
+    else:
+        recent_deg = np.zeros(n_nodes, dtype=np.float32)
+
+    burstiness = recent_deg / np.maximum(1.0, total_deg)
+
+    # -------------------------
+    # Partner diversity: unique neighbors (src: unique dst; dst: unique src)
+    # -------------------------
+    uniq_out = edges_df.groupby('u')['i'].nunique()
+    uniq_in  = edges_df.groupby('i')['u'].nunique()
+
+    uniq_partners = np.zeros(n_nodes, dtype=np.float32)
+    if not uniq_out.empty:
+        idx = uniq_out.index.to_numpy(dtype=np.int64, copy=False)
+        vals = uniq_out.to_numpy(dtype=np.int64, copy=False)
+        uniq_partners[idx] += vals.astype(np.float32)
+    if not uniq_in.empty:
+        idx = uniq_in.index.to_numpy(dtype=np.int64, copy=False)
+        vals = uniq_in.to_numpy(dtype=np.int64, copy=False)
+        uniq_partners[idx] += vals.astype(np.float32)
+
+    diversity = uniq_partners / np.maximum(1.0, total_deg)
+
+    # -------------------------
+    # Assemble feature matrix
+    # -------------------------
+    feats = np.empty((n_nodes, 6), dtype=np.float32)
+    feats[:, 0] = np.log1p(deg_out)     # lifetime out-degree (log1p)
+    feats[:, 1] = np.log1p(deg_in)      # lifetime in-degree  (log1p)
+    feats[:, 2] = np.log1p(total_deg)   # lifetime total-degree (log1p)
+    feats[:, 3] = recency               # 0 new … 1 old/inactive
+    feats[:, 4] = burstiness            # recent / lifetime degree
+    feats[:, 5] = diversity             # unique partners / lifetime degree
+
+    return feats
+
+
 def run_fraud_detection_experiments(
         data_path, stored_embedding_file_path, is_directed, batch_ts_size,
         sliding_window_duration, embedding_mode, walk_length, num_walks_per_node,
@@ -781,7 +898,21 @@ def run_fraud_detection_experiments(
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
-    node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
+    # 1) stabilize heavy-tailed raw features and add a zero-indicator for F10
+    x = node_features.astype(np.float32, copy=False)
+    heavy = [2, 3, 5, 6, 7, 8, 10]  # heavy-tailed dims from your audit
+    x[:, heavy] = np.log1p(np.clip(x[:, heavy], 0, None))
+    is_zero_F10 = (node_features[:, 10] == 0).astype(np.float32).reshape(-1, 1)
+
+    # 2) graph stats
+    graph_stats = build_graph_stats_features(edges_df, n_nodes=x.shape[0], recent_window=100)
+
+    # 3) concatenate and scale (fit on train_ids inside prepare_node_features_all)
+    node_features = np.concatenate([x, is_zero_F10, graph_stats], axis=1).astype(np.float32)
+    node_features_tensor = prepare_node_features_all(node_features, train_ids)
+
+    # (optional) sanity log
+    logger.info(f"Augmented feature dim: {node_features.shape[1]}")
 
     logger.info("=" * 60)
     logger.info(f"Computing embeddings with {embedding_mode} approach...")
