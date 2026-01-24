@@ -798,120 +798,6 @@ def prepare_node_features_all(node_features: np.ndarray,
     return torch.from_numpy(feats)
 
 
-def build_graph_stats_features(edges_df: pd.DataFrame,
-                               n_nodes: int,
-                               recent_window: int = 100) -> np.ndarray:
-    """
-    Build cheap, high-signal graph statistics per node.
-
-    Parameters
-    ----------
-    edges_df : pd.DataFrame
-        Must contain integer columns: 'u' (src), 'i' (dst), 'ts' (timestamp).
-    n_nodes : int
-        Total number of nodes; feature matrix will be [n_nodes, 6].
-    recent_window : int, default 100
-        Edges with ts >= (t_max - recent_window) are considered "recent".
-
-    Returns
-    -------
-    feats : np.ndarray (float32) of shape [n_nodes, 6]
-        Column order:
-          0: log1p(out_degree_lifetime)
-          1: log1p(in_degree_lifetime)
-          2: log1p(total_degree_lifetime)
-          3: recency in [0,1]  (0 = most recent activity; 1 = oldest/inactive)
-          4: burstiness = recent_degree / max(1, total_degree)
-          5: diversity  = unique_partners / max(1, total_degree)
-    """
-    # Pull columns as contiguous numpy arrays
-    u  = edges_df['u'].to_numpy(dtype=np.int64, copy=False)
-    i  = edges_df['i'].to_numpy(dtype=np.int64, copy=False)
-    ts = edges_df['ts'].to_numpy(dtype=np.int64, copy=False)
-
-    # Global time range
-    tmin = int(ts.min()) if ts.size else 0
-    tmax = int(ts.max()) if ts.size else 0
-    span = max(1, tmax - tmin)
-
-    # -------------------------
-    # Lifetime degrees (np.bincount is fast and memory-friendly)
-    # -------------------------
-    deg_out = np.bincount(u, minlength=n_nodes).astype(np.float32)
-    deg_in  = np.bincount(i, minlength=n_nodes).astype(np.float32)
-    total_deg = deg_out + deg_in  # float32
-
-    # -------------------------
-    # Last activity timestamp per node (max over src/dst roles)
-    # (vectorized via pandas groupby once per side for simplicity)
-    # -------------------------
-    last_ts = np.full(n_nodes, -1, dtype=np.int64)  # -1 => inactive by default
-
-    if len(u) > 0:
-        last_u = edges_df.groupby('u')['ts'].max()
-        idx = last_u.index.to_numpy(dtype=np.int64, copy=False)
-        vals = last_u.to_numpy(dtype=np.int64, copy=False)
-        last_ts[idx] = np.maximum(last_ts[idx], vals)
-
-    if len(i) > 0:
-        last_i = edges_df.groupby('i')['ts'].max()
-        idx = last_i.index.to_numpy(dtype=np.int64, copy=False)
-        vals = last_i.to_numpy(dtype=np.int64, copy=False)
-        # np.maximum with fancy indexing to merge dst-side maxima
-        last_ts[idx] = np.maximum(last_ts[idx], vals)
-
-    # Recency: normalized "time since last activity"
-    recency = np.ones(n_nodes, dtype=np.float32)  # default 1.0 for inactive nodes
-    active_mask = last_ts >= tmin
-    if active_mask.any():
-        recency[active_mask] = (tmax - last_ts[active_mask]) / float(span)
-
-    # -------------------------
-    # Recent degrees within a time window
-    # -------------------------
-    cutoff = tmax - int(recent_window)
-    recent_mask = ts >= cutoff
-    if recent_mask.any():
-        deg_out_recent = np.bincount(u[recent_mask], minlength=n_nodes).astype(np.float32)
-        deg_in_recent  = np.bincount(i[recent_mask], minlength=n_nodes).astype(np.float32)
-        recent_deg = deg_out_recent + deg_in_recent
-    else:
-        recent_deg = np.zeros(n_nodes, dtype=np.float32)
-
-    burstiness = recent_deg / np.maximum(1.0, total_deg)
-
-    # -------------------------
-    # Partner diversity: unique neighbors (src: unique dst; dst: unique src)
-    # -------------------------
-    uniq_out = edges_df.groupby('u')['i'].nunique()
-    uniq_in  = edges_df.groupby('i')['u'].nunique()
-
-    uniq_partners = np.zeros(n_nodes, dtype=np.float32)
-    if not uniq_out.empty:
-        idx = uniq_out.index.to_numpy(dtype=np.int64, copy=False)
-        vals = uniq_out.to_numpy(dtype=np.int64, copy=False)
-        uniq_partners[idx] += vals.astype(np.float32)
-    if not uniq_in.empty:
-        idx = uniq_in.index.to_numpy(dtype=np.int64, copy=False)
-        vals = uniq_in.to_numpy(dtype=np.int64, copy=False)
-        uniq_partners[idx] += vals.astype(np.float32)
-
-    diversity = uniq_partners / np.maximum(1.0, total_deg)
-
-    # -------------------------
-    # Assemble feature matrix
-    # -------------------------
-    feats = np.empty((n_nodes, 6), dtype=np.float32)
-    feats[:, 0] = np.log1p(deg_out)     # lifetime out-degree (log1p)
-    feats[:, 1] = np.log1p(deg_in)      # lifetime in-degree  (log1p)
-    feats[:, 2] = np.log1p(total_deg)   # lifetime total-degree (log1p)
-    feats[:, 3] = recency               # 0 new … 1 old/inactive
-    feats[:, 4] = burstiness            # recent / lifetime degree
-    feats[:, 5] = diversity             # unique partners / lifetime degree
-
-    return feats
-
-
 def run_fraud_detection_experiments(
         data_path, stored_embedding_file_path, is_directed, batch_ts_size,
         sliding_window_duration, embedding_mode, walk_length, num_walks_per_node,
@@ -944,11 +830,8 @@ def run_fraud_detection_experiments(
     x[:, heavy] = np.log1p(np.clip(x[:, heavy], 0, None))
     is_zero_F10 = (node_features[:, 10] == 0).astype(np.float32).reshape(-1, 1)
 
-    # 2) graph stats
-    graph_stats = build_graph_stats_features(edges_df, n_nodes=x.shape[0], recent_window=100)
-
     # 3) concatenate and scale (fit on train_ids inside prepare_node_features_all)
-    node_features = np.concatenate([x, is_zero_F10, graph_stats], axis=1).astype(np.float32)
+    node_features = np.concatenate([x, is_zero_F10], axis=1).astype(np.float32)
     node_features_tensor = prepare_node_features_all(node_features, train_ids)
 
     # (optional) sanity log

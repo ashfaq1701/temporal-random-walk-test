@@ -1,11 +1,11 @@
 import argparse
 import logging
+import random
 import os
 import pickle
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict
 
 import numpy as np
 import pandas as pd
@@ -14,14 +14,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from gensim.models import Word2Vec
+from collections import Counter
+from gensim import utils
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from temporal_random_walk import TemporalRandomWalk
-from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+random.seed(42); np.random.seed(42); torch.manual_seed(42)
 
 
 @contextmanager
@@ -196,6 +199,8 @@ class LinkPredictionModel(nn.Module):
         hidden_dim1 = max(64, input_dim // 2)
         hidden_dim2 = max(32, input_dim // 4)
 
+        self.edge_norm = nn.LayerNorm(input_dim)
+
         self.fc1 = nn.Linear(input_dim, hidden_dim1)
         self.dropout1 = nn.Dropout(0.2)
 
@@ -226,7 +231,9 @@ class LinkPredictionModel(nn.Module):
         else:
             raise ValueError(f"Unknown edge_op: {self.edge_op}")
 
-        x = F.relu(self.fc1(edge_features))
+        x = self.edge_norm(edge_features)
+
+        x = F.relu(self.fc1(x))
         x = self.dropout1(x)
 
         x = F.relu(self.fc2(x))
@@ -245,21 +252,15 @@ def train_link_prediction_model(model,
                                 learning_rate=0.001,
                                 epochs=20,
                                 device='cpu',
-                                patience=5,
-                                use_amp=True):
+                                patience=5):
     logger.info(f"Training neural network on {len(X_sources_train):,} samples with batch size {batch_size:,}")
 
     # Move model to device
     model = model.to(device)
-    use_amp = use_amp and device == 'cuda'
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     early_stopping = EarlyStopping(mode='max', patience=patience)
-
-    scaler = GradScaler() if use_amp else None
-    if use_amp:
-        logger.info("Mixed precision training enabled")
 
     X_sources_train_tensor = torch.tensor(X_sources_train, dtype=torch.long)
     X_targets_train_tensor = torch.tensor(X_targets_train, dtype=torch.long)
@@ -314,18 +315,10 @@ def train_link_prediction_model(model,
 
             optimizer.zero_grad()
 
-            if use_amp:
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    outputs = model(batch_sources, batch_targets)
-                    loss = criterion(outputs, batch_y)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                outputs = model(batch_sources, batch_targets)
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
+            outputs = model(batch_sources, batch_targets)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
 
             total_train_loss += loss.item()
 
@@ -349,13 +342,8 @@ def train_link_prediction_model(model,
                 batch_targets = batch_targets.to(device, non_blocking=True)
                 batch_y = batch_y.to(device, non_blocking=True)
 
-                if use_amp:
-                    with autocast(device_type='cuda', dtype=torch.float16):
-                        outputs = model(batch_sources, batch_targets)
-                        loss = criterion(outputs, batch_y)
-                else:
-                    outputs = model(batch_sources, batch_targets)
-                    loss = criterion(outputs, batch_y)
+                outputs = model(batch_sources, batch_targets)
+                loss = criterion(outputs, batch_y)
 
                 total_val_loss += loss.item()
 
@@ -408,11 +396,9 @@ def predict_with_model(model,
                        X_sources_test,
                        X_targets_test,
                        batch_size,
-                       device='cpu',
-                       use_amp=True):
+                       device='cpu'):
     model = model.to(device)
     model.eval()
-    use_amp = use_amp and device == 'cuda'
 
     logger.info(f"Making predictions on {len(X_sources_test):,} samples with batch size {batch_size:,}")
 
@@ -442,11 +428,7 @@ def predict_with_model(model,
             batch_sources = batch_sources.to(device, non_blocking=True)
             batch_targets = batch_targets.to(device, non_blocking=True)
 
-            if use_amp:
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    logits = model(batch_sources, batch_targets)
-            else:
-                logits = model(batch_sources, batch_targets)
+            logits = model(batch_sources, batch_targets)
 
             probs = torch.sigmoid(logits).detach().float()
             predictions_list.append(probs)
@@ -469,9 +451,17 @@ def predict_with_model(model,
     return all_predictions
 
 
+def l2_normalize_rows(emb_dict):
+    out = {}
+    for k, v in emb_dict.items():
+        n = np.linalg.norm(v)
+        out[k] = (v / (n + 1e-12)).astype(np.float32)
+    return out
+
+
 def train_embeddings_full_approach(train_sources, train_targets, train_timestamps,
                                    is_directed, walk_length, num_walks_per_node, edge_picker,
-                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
+                                   embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42, sample=0.0):
     """Train embeddings using full dataset approach."""
     logger.info("Training embeddings with full approach")
 
@@ -527,138 +517,121 @@ def train_embeddings_full_approach(train_sources, train_targets, train_timestamp
             vector_size=embedding_dim,
             window=10,
             min_count=1,
+            sample=sample,
             workers=word2vec_n_workers,
             sg=1,
             seed=seed
         )
 
-    # Extract embeddings
-    node_embeddings = {}
-    for node in model.wv.index_to_key:
-        node_embeddings[int(node)] = model.wv[node]
+    node_embeddings = {int(node): model.wv[node] for node in model.wv.index_to_key}
+    node_embeddings = l2_normalize_rows(node_embeddings)
 
     logger.info(f'Trained embeddings for {len(node_embeddings)} nodes')
     return node_embeddings
 
 
-def train_embeddings_streaming_approach(train_sources, train_targets, train_timestamps,
-                                        batch_ts_size, sliding_window_duration, weighted_sum_alpha,
-                                        is_directed, walk_length, num_walks_per_node, edge_picker,
-                                        embedding_dim, walk_use_gpu, word2vec_n_workers, seed=42):
-    """Train embeddings using streaming window approach."""
-    logger.info("Training embeddings with streaming approach")
+def train_embeddings_streaming_approach(
+    train_sources, train_targets, train_timestamps,
+    batch_ts_size, sliding_window_duration, is_directed,
+    walk_length, num_walks_per_node, edge_picker, embedding_dim,
+    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42, sample=0.0
+):
+    logger.info("Training embeddings with streaming Word2Vec (incremental)")
 
-    temporal_random_walk = TemporalRandomWalk(is_directed=is_directed, use_gpu=walk_use_gpu,
-                                              max_time_capacity=sliding_window_duration)
-    global_embeddings = {}
+    temporal_random_walk = TemporalRandomWalk(
+        is_directed=is_directed,
+        use_gpu=walk_use_gpu,
+        max_time_capacity=sliding_window_duration
+    )
 
-    # Create time-based batches
-    min_timestamp = np.min(train_timestamps)
-    max_timestamp = np.max(train_timestamps)
-    total_time_range = max_timestamp - min_timestamp
-    num_batches = int(np.ceil(total_time_range / batch_ts_size))
-
+    min_ts = int(np.min(train_timestamps))
+    max_ts = int(np.max(train_timestamps))
+    total_range = max_ts - min_ts
+    num_batches = int(np.ceil(total_range / batch_ts_size))
     logger.info(f"Processing {num_batches} batches with duration={batch_ts_size:,}")
 
-    for batch_idx in range(num_batches):
-        batch_start_ts = min_timestamp + (batch_idx * batch_ts_size)
-        batch_end_ts = min_timestamp + ((batch_idx + 1) * batch_ts_size)
+    w2v = None
 
-        if batch_idx == num_batches - 1:
-            batch_end_ts = max_timestamp + 1
+    def keep_existing_tokens(word, count, min_count):
+        if w2v is not None and word in w2v.wv.key_to_index:
+            return utils.RULE_KEEP
+        return None
 
-        # Filter batch edges
-        batch_mask = (train_timestamps >= batch_start_ts) & (train_timestamps < batch_end_ts)
-        batch_sources = train_sources[batch_mask]
-        batch_targets = train_targets[batch_mask]
-        batch_ts = train_timestamps[batch_mask]
+    for b in range(num_batches):
+        b_start = min_ts + b * batch_ts_size
+        b_end   = min_ts + (b + 1) * batch_ts_size
+        if b == num_batches - 1:
+            b_end = max_ts + 1
 
-        if len(batch_sources) == 0:
+        mask = (train_timestamps >= b_start) & (train_timestamps < b_end)
+        b_src = train_sources[mask]
+        b_tgt = train_targets[mask]
+        b_ts  = train_timestamps[mask]
+        if len(b_src) == 0:
             continue
 
-        logger.info(f"Batch {batch_idx + 1}/{num_batches}: {len(batch_sources):,} edges")
+        logger.info(f"Batch {b + 1}/{num_batches}: {len(b_src):,} edges [{b_start}, {b_end})")
 
-        # Add edges to temporal random walk
-        temporal_random_walk.add_multiple_edges(batch_sources, batch_targets, batch_ts)
+        temporal_random_walk.add_multiple_edges(b_src, b_tgt, b_ts)
 
-        logger.info(
-            f'Generating forward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
-
-        # Generate walks
-        walks_forward, _, walk_lengths_forward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+        walks_f, _, lens_f = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
             max_walk_len=walk_length,
             num_walks_per_node=num_walks_per_node // 2,
             walk_bias=edge_picker,
             initial_edge_bias='Uniform',
             walk_direction="Forward_In_Time"
         )
-
-        logger.info(
-            f'Generated {len(walk_lengths_forward)} forward walks. Mean length: {np.mean(walk_lengths_forward):.2f}')
-
-        logger.info(
-            f'Generating backward {num_walks_per_node // 2} walks per node with max length {walk_length} using {edge_picker} picker.')
-
-        walks_backward, _, walk_lengths_backward = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
+        walks_b, _, lens_b = temporal_random_walk.get_random_walks_and_times_for_all_nodes(
             max_walk_len=walk_length,
             num_walks_per_node=num_walks_per_node // 2,
             walk_bias=edge_picker,
             initial_edge_bias='Uniform',
             walk_direction="Backward_In_Time"
         )
+        walks = np.concatenate([walks_f, walks_b], axis=0)
+        lens  = np.concatenate([lens_f, lens_b], axis=0)
 
-        logger.info(
-            f'Generated {len(walk_lengths_backward)} backward walks. Mean length: {np.mean(walk_lengths_backward):.2f}')
-
-        walks = np.concatenate([walks_forward, walks_backward], axis=0)
-        walk_lengths = np.concatenate([walk_lengths_forward, walk_lengths_backward], axis=0)
-
-        logger.info(f'Generated {len(walks)} walks in total. Mean length: {np.mean(walk_lengths):.2f}')
-
-        # Clean walks
         clean_walks = []
-        for walk, length in zip(walks, walk_lengths):
-            clean_walk = [str(node) for node in walk[:length]]
-            if len(clean_walk) > 1:
-                clean_walks.append(clean_walk)
-
-        # Train Word2Vec on batch
-        try:
-            with suppress_word2vec_output():
-                batch_model = Word2Vec(
-                    sentences=clean_walks,
-                    vector_size=embedding_dim,
-                    window=10,
-                    min_count=1,
-                    workers=word2vec_n_workers,
-                    sg=1,
-                    seed=seed
-                )
-
-            # Extract batch embeddings
-            batch_embeddings = {}
-            for node in batch_model.wv.index_to_key:
-                batch_embeddings[int(node)] = batch_model.wv[node]
-
-            # Merge with global embeddings
-            if not global_embeddings:
-                global_embeddings = batch_embeddings.copy()
-            else:
-                for node_id, batch_embedding in batch_embeddings.items():
-                    if node_id in global_embeddings:
-                        global_embeddings[node_id] = (
-                                weighted_sum_alpha * global_embeddings[node_id] +
-                                (1 - weighted_sum_alpha) * batch_embedding
-                        )
-                    else:
-                        global_embeddings[node_id] = batch_embedding
-
-        except Exception as e:
-            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+        for w, L in zip(walks, lens):
+            path = [str(n) for n in w[:L]]
+            if len(path) > 1:
+                clean_walks.append(path)
+        if not clean_walks:
+            logger.info("No valid walks in this batch; skipping.")
             continue
 
-    logger.info(f"Streaming completed. Final embedding store: {len(global_embeddings)} nodes")
-    return global_embeddings
+        try:
+            with suppress_word2vec_output():
+                if w2v is None:
+                    w2v = Word2Vec(
+                        vector_size=embedding_dim,
+                        window=10,
+                        min_count=1,
+                        sample=sample,
+                        workers=word2vec_n_workers,
+                        sg=1,
+                        seed=seed
+                    )
+                    w2v.build_vocab(clean_walks)
+                else:
+                    w2v.build_vocab(clean_walks, update=True, trim_rule=keep_existing_tokens)
+
+                w2v.train(
+                    clean_walks,
+                    total_examples=len(clean_walks),
+                    epochs=batch_epochs
+                )
+        except Exception as e:
+            logger.error(f"Error processing batch {b + 1}: {e}")
+            continue
+
+    if w2v is None:
+        logger.warning("No batches produced walks; returning empty embedding store.")
+        return {}
+
+    node_embeddings = {int(k): w2v.wv[k] for k in w2v.wv.index_to_key}
+    logger.info(f"Streaming completed. Final embedding store: {len(node_embeddings)} nodes")
+    return node_embeddings
 
 
 def get_embedding_tensor(embedding_dict, max_node_id):
@@ -743,14 +716,35 @@ def evaluate_link_prediction(
     return results
 
 
-def add_gaussian_noise(embeddings: Dict[int, np.ndarray], alpha) -> Dict[int, np.ndarray]:
-    noisy_embeddings = {}
-    for node_id, embedding in embeddings.items():
-        noise = np.random.normal(loc=0.0, scale=1.0, size=embedding.shape)
-        blended = (1 - alpha) * embedding + alpha * noise
-        noisy_embeddings[node_id] = blended
+def add_noise_edge_replacement(sources, targets, timestamps, noise_rate, random_state=42):
+    np.random.seed(random_state)
 
-    return noisy_embeddings
+    num_edges = len(sources)
+    num_to_replace = int(num_edges * noise_rate)
+
+    # Step 1: Select edges to rewire (keep source and timestamp, only change target)
+    rewire_indices = np.random.choice(num_edges, num_to_replace, replace=False)
+
+    # Create a copy of the original arrays
+    final_sources = sources.copy()
+    final_targets = targets.copy()
+    final_timestamps = timestamps.copy()
+
+    # Step 2: Rewire selected edges - keep source and timestamp, change target
+    all_nodes = np.unique(np.concatenate([sources, targets]))
+
+    # For each edge to rewire, randomly select a new target
+    new_targets = np.random.choice(all_nodes, num_to_replace)
+
+    # Replace the targets of the selected edges
+    final_targets[rewire_indices] = new_targets
+
+    # Step 3: Sort by timestamp to maintain temporal order
+    sort_indices = np.argsort(final_timestamps)
+
+    return (final_sources[sort_indices],
+            final_targets[sort_indices],
+            final_timestamps[sort_indices])
 
 
 def run_link_prediction_experiments(
@@ -759,7 +753,6 @@ def run_link_prediction_experiments(
         is_directed,
         batch_ts_size,
         sliding_window_duration,
-        weighted_sum_alpha,
         walk_length,
         num_walks_per_node,
         edge_picker,
@@ -774,8 +767,8 @@ def run_link_prediction_experiments(
         batch_size,
         num_noise_steps,
         word2vec_n_workers,
-        output_path,
-        precomputed_data_path
+        word2vec_batch_epochs,
+        output_path
 ):
     logger.info("Starting link prediction experiments")
 
@@ -804,59 +797,67 @@ def run_link_prediction_experiments(
     max_node_id = int(all_node_ids.max())
     logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
-    if not (precomputed_data_path and os.path.isfile(precomputed_data_path)):
-        logger.info("=" * 60)
-        logger.info("Computing data and embeddings ...")
-        if precomputed_data_path:
-            logger.info(f'and saving in {precomputed_data_path}')
-        logger.info("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Computing data and embeddings ...")
+    logger.info("=" * 60)
 
-        train_neg_start = 0
-        train_neg_end = len(train_sources) * negative_edges_per_positive
+    train_neg_start = 0
+    train_neg_end = len(train_sources) * negative_edges_per_positive
 
-        valid_neg_start = train_neg_end
-        valid_neg_end = valid_neg_start + len(val_sources) * negative_edges_per_positive
+    valid_neg_start = train_neg_end
+    valid_neg_end = valid_neg_start + len(val_sources) * negative_edges_per_positive
 
-        test_neg_start = valid_neg_end
-        test_neg_end = test_neg_start + len(test_sources) * negative_edges_per_positive
+    test_neg_start = valid_neg_end
+    test_neg_end = test_neg_start + len(test_sources) * negative_edges_per_positive
 
-        negative_sources_train = negative_sources[train_neg_start:train_neg_end]
-        negative_targets_train = negative_targets[train_neg_start:train_neg_end]
+    negative_sources_train = negative_sources[train_neg_start:train_neg_end]
+    negative_targets_train = negative_targets[train_neg_start:train_neg_end]
 
-        negative_sources_valid = negative_sources[valid_neg_start:valid_neg_end]
-        negative_targets_valid = negative_targets[valid_neg_start:valid_neg_end]
+    negative_sources_valid = negative_sources[valid_neg_start:valid_neg_end]
+    negative_targets_valid = negative_targets[valid_neg_start:valid_neg_end]
 
-        negative_sources_test = negative_sources[test_neg_start:test_neg_end]
-        negative_targets_test = negative_targets[test_neg_start:test_neg_end]
+    negative_sources_test = negative_sources[test_neg_start:test_neg_end]
+    negative_targets_test = negative_targets[test_neg_start:test_neg_end]
+
+    valid_sources_combined, valid_targets_combined, valid_labels_combined = combine_negative_with_positive_edges(
+        val_sources,
+        val_targets,
+        negative_sources_valid,
+        negative_targets_valid,
+        negative_edges_per_positive
+    )
+
+    test_sources_combined, test_targets_combined, test_labels_combined = combine_negative_with_positive_edges(
+        test_sources,
+        test_targets,
+        negative_sources_test,
+        negative_targets_test,
+        negative_edges_per_positive
+    )
+
+    streaming_results = {}
+    full_results = {}
+
+    noise_rates = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
+    for noise_rate in noise_rates:
+        logger.info(f'\n--- Noise rate: {noise_rate} ----')
+
+        augmented_train_sources, augment_train_targets, augmented_train_timestamps = add_noise_edge_replacement(
+            train_sources, train_targets, train_timestamps, noise_rate
+        )
 
         train_sources_combined, train_targets_combined, train_labels_combined = combine_negative_with_positive_edges(
-            train_sources,
-            train_targets,
+            augmented_train_sources,
+            augment_train_targets,
             negative_sources_train,
             negative_targets_train,
             negative_edges_per_positive
         )
 
-        valid_sources_combined, valid_targets_combined, valid_labels_combined = combine_negative_with_positive_edges(
-            val_sources,
-            val_targets,
-            negative_sources_valid,
-            negative_targets_valid,
-            negative_edges_per_positive
-        )
-
-        test_sources_combined, test_targets_combined, test_labels_combined = combine_negative_with_positive_edges(
-            test_sources,
-            test_targets,
-            negative_sources_test,
-            negative_targets_test,
-            negative_edges_per_positive
-        )
-
         full_embeddings = train_embeddings_full_approach(
-            train_sources=train_sources,
-            train_targets=train_targets,
-            train_timestamps=train_timestamps,
+            train_sources=augmented_train_sources,
+            train_targets=augment_train_targets,
+            train_timestamps=augmented_train_timestamps,
             is_directed=is_directed,
             walk_length=walk_length,
             num_walks_per_node=num_walks_per_node,
@@ -867,73 +868,29 @@ def run_link_prediction_experiments(
         )
 
         streaming_embeddings = train_embeddings_streaming_approach(
-            train_sources=train_sources,
-            train_targets=train_targets,
-            train_timestamps=train_timestamps,
+            train_sources=augmented_train_sources,
+            train_targets=augment_train_targets,
+            train_timestamps=augmented_train_timestamps,
             batch_ts_size=batch_ts_size,
             sliding_window_duration=sliding_window_duration,
-            weighted_sum_alpha=weighted_sum_alpha,
             is_directed=is_directed,
             walk_length=walk_length,
             num_walks_per_node=num_walks_per_node,
             edge_picker=edge_picker,
             embedding_dim=embedding_dim,
             walk_use_gpu=incremental_embedding_use_gpu,
-            word2vec_n_workers=word2vec_n_workers
+            word2vec_n_workers=word2vec_n_workers,
+            batch_epochs=word2vec_batch_epochs
         )
 
-        precomputed_data = {
-            'train_sources_combined': train_sources_combined,
-            'train_targets_combined': train_targets_combined,
-            'train_labels_combined': train_labels_combined,
-            'valid_sources_combined': valid_sources_combined,
-            'valid_targets_combined': valid_targets_combined,
-            'valid_labels_combined': valid_labels_combined,
-            'test_sources_combined': test_sources_combined,
-            'test_targets_combined': test_targets_combined,
-            'test_labels_combined': test_labels_combined,
-            'full_embeddings': full_embeddings,
-            'streaming_embeddings': streaming_embeddings
-        }
+        device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
 
-        if precomputed_data_path:
-            with open(precomputed_data_path, 'wb') as f:
-                pickle.dump(precomputed_data, f)
-    else:
         logger.info("=" * 60)
-        logger.info(f"Preloading data and embeddings from {precomputed_data_path} ...")
+        logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
         logger.info("=" * 60)
 
-        with open(precomputed_data_path, 'rb') as f:
-            precomputed_data = pickle.load(f)
-
-        train_sources_combined = precomputed_data['train_sources_combined']
-        train_targets_combined = precomputed_data['train_targets_combined']
-        train_labels_combined = precomputed_data['train_labels_combined']
-        valid_sources_combined = precomputed_data['valid_sources_combined']
-        valid_targets_combined = precomputed_data['valid_targets_combined']
-        valid_labels_combined = precomputed_data['valid_labels_combined']
-        test_sources_combined = precomputed_data['test_sources_combined']
-        test_targets_combined = precomputed_data['test_targets_combined']
-        test_labels_combined = precomputed_data['test_labels_combined']
-        full_embeddings = precomputed_data['full_embeddings']
-        streaming_embeddings = precomputed_data['streaming_embeddings']
-
-    noise_alphas = np.arange(0.0, 1.05, 1.0 / float(num_noise_steps)).tolist()
-
-    logger.info("=" * 60)
-    logger.info("TRAINING EMBEDDINGS - STREAMING APPROACH")
-    logger.info("=" * 60)
-
-    device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
-
-    streaming_results = {}
-
-    for noise_alpha in noise_alphas:
         for run in range(n_runs):
-            logger.info(f"\n--- Noise alpha: {noise_alpha}, Run {run + 1}/{n_runs} ---")
-
-            noisy_embeddings = add_gaussian_noise(streaming_embeddings, noise_alpha)
+            logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
             current_streaming_results = evaluate_link_prediction(
                 train_sources=train_sources_combined,
@@ -945,7 +902,7 @@ def run_link_prediction_experiments(
                 test_sources=test_sources_combined,
                 test_targets=test_targets_combined,
                 test_labels=test_labels_combined,
-                embedding_tensor=get_embedding_tensor(noisy_embeddings, max_node_id),
+                embedding_tensor=get_embedding_tensor(streaming_embeddings, max_node_id),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 n_epochs=n_epochs,
@@ -954,38 +911,20 @@ def run_link_prediction_experiments(
             )
 
             for key in current_streaming_results.keys():
-                if noise_alpha not in streaming_results:
-                    streaming_results[noise_alpha] = {}
+                if noise_rate not in streaming_results:
+                    streaming_results[noise_rate] = {}
 
-                if key not in streaming_results[noise_alpha]:
-                    streaming_results[noise_alpha][key] = []
+                if key not in streaming_results[noise_rate]:
+                    streaming_results[noise_rate][key] = []
 
-                streaming_results[noise_alpha][key].append(current_streaming_results[key])
+                streaming_results[noise_rate][key].append(current_streaming_results[key])
 
-    logger.info(f"\nStreaming Approach Results Across Noise Levels:")
-    logger.info("=" * 80)
+        logger.info("=" * 60)
+        logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
+        logger.info("=" * 60)
 
-    for noise_alpha in noise_alphas:
-        if noise_alpha in streaming_results:
-            logger.info(f"\nNoise Level {noise_alpha:.3f}:")
-            for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
-                if metric in streaming_results[noise_alpha]:
-                    values = streaming_results[noise_alpha][metric]
-                    mean_val = np.mean(values)
-                    std_val = np.std(values)
-                    logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
-
-    logger.info("=" * 60)
-    logger.info("TRAINING EMBEDDINGS - FULL APPROACH")
-    logger.info("=" * 60)
-
-    full_results = {}
-
-    for noise_alpha in noise_alphas:
         for run in range(n_runs):
-            logger.info(f"\n--- Noise alpha: {noise_alpha}, Run {run + 1}/{n_runs} ---")
-
-            noisy_embeddings = add_gaussian_noise(full_embeddings, noise_alpha)
+            logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
             current_full_results = evaluate_link_prediction(
                 train_sources=train_sources_combined,
@@ -997,7 +936,7 @@ def run_link_prediction_experiments(
                 test_sources=test_sources_combined,
                 test_targets=test_targets_combined,
                 test_labels=test_labels_combined,
-                embedding_tensor=get_embedding_tensor(noisy_embeddings, max_node_id),
+                embedding_tensor=get_embedding_tensor(full_embeddings, max_node_id),
                 edge_op=edge_op,
                 negative_edges_per_positive=negative_edges_per_positive,
                 n_epochs=n_epochs,
@@ -1006,23 +945,36 @@ def run_link_prediction_experiments(
             )
 
             for key in current_full_results.keys():
-                if noise_alpha not in full_results:
-                    full_results[noise_alpha] = {}
+                if noise_rate not in full_results:
+                    full_results[noise_rate] = {}
 
-                if key not in full_results[noise_alpha]:
-                    full_results[noise_alpha][key] = []
+                if key not in full_results[noise_rate]:
+                    full_results[noise_rate][key] = []
 
-                full_results[noise_alpha][key].append(current_full_results[key])
+                full_results[noise_rate][key].append(current_full_results[key])
+
+    logger.info(f"\nStreaming Approach Results Across Noise Levels:")
+    logger.info("=" * 80)
+
+    for noise_rate in noise_rates:
+        if noise_rate in streaming_results:
+            logger.info(f"\nNoise Level {noise_rate:.3f}:")
+            for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
+                if metric in streaming_results[noise_rate]:
+                    values = streaming_results[noise_rate][metric]
+                    mean_val = np.mean(values)
+                    std_val = np.std(values)
+                    logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
 
     logger.info(f"\nFull Approach Results Across Noise Levels:")
     logger.info("=" * 80)
 
-    for noise_alpha in noise_alphas:
-        if noise_alpha in full_results:
-            logger.info(f"\nNoise Level {noise_alpha:.3f}:")
+    for noise_rate in noise_rates:
+        if noise_rate in full_results:
+            logger.info(f"\nNoise Level {noise_rate:.3f}:")
             for metric in ['auc', 'accuracy', 'precision', 'recall', 'f1_score', 'test_mrr', 'val_mrr']:
-                if metric in full_results[noise_alpha]:
-                    values = full_results[noise_alpha][metric]
+                if metric in full_results[noise_rate]:
+                    values = full_results[noise_rate][metric]
                     mean_val = np.mean(values)
                     std_val = np.std(values)
                     logger.info(f"  {metric.upper()}: {mean_val:.4f} ± {std_val:.4f}")
@@ -1058,8 +1010,6 @@ if __name__ == '__main__':
                         help='Whether the graph is directed (true/false)')
 
     # Model parameters
-    parser.add_argument('--weighted_sum_alpha', type=float, default=0.5,
-                        help='Alpha parameter for weighted sum in streaming approach')
     parser.add_argument('--walk_length', type=int, default=80,
                         help='Maximum length of random walks')
     parser.add_argument('--num_walks_per_node', type=int, default=10,
@@ -1068,7 +1018,7 @@ if __name__ == '__main__':
                         help='Edge picker for random walks')
     parser.add_argument('--embedding_dim', type=int, default=128,
                         help='Dimensionality of node embeddings')
-    parser.add_argument('--edge_op', type=str, default='hadamard',
+    parser.add_argument('--edge_op', type=str, default='weighted-l1',
                         choices=['average', 'hadamard', 'weighted-l1', 'weighted-l2'],
                         help='Edge operation for combining node embeddings')
 
@@ -1081,7 +1031,7 @@ if __name__ == '__main__':
                         help='Number of epochs for neural network training')
     parser.add_argument('--n_runs', type=int, default=3,
                         help='Number of experimental runs for averaging results')
-    parser.add_argument('--batch_size', type=int, default=1_000_000, help='Batch size for training')
+    parser.add_argument('--batch_size', type=int, default=10_000, help='Batch size for training')
 
     # GPU settings
     parser.add_argument('--full_embedding_use_gpu', action='store_true',
@@ -1094,9 +1044,10 @@ if __name__ == '__main__':
     # Other settings
     parser.add_argument('--word2vec_n_workers', type=int, default=8,
                         help='Number of workers for Word2Vec training')
+    parser.add_argument('--word2vec_batch_epochs', type=int, default=3,
+                        help='Number of batch epochs for incremental Word2Vec training')
     parser.add_argument('--output_path', type=str, default=None,
                         help='File path to save results (optional)')
-    parser.add_argument('--precomputed_data_path', type=str, required=False, default=None, help='Precomputed data path')
 
     args = parser.parse_args()
 
@@ -1107,7 +1058,6 @@ if __name__ == '__main__':
         is_directed=args.is_directed,
         batch_ts_size=args.batch_ts_size,
         sliding_window_duration=args.sliding_window_duration,
-        weighted_sum_alpha=args.weighted_sum_alpha,
         walk_length=args.walk_length,
         num_walks_per_node=args.num_walks_per_node,
         edge_picker=args.edge_picker,
@@ -1122,6 +1072,6 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         num_noise_steps=args.num_noise_steps,
         word2vec_n_workers=args.word2vec_n_workers,
-        output_path=args.output_path,
-        precomputed_data_path=args.precomputed_data_path
+        word2vec_batch_epochs=args.word2vec_batch_epochs,
+        output_path=args.output_path
     )
