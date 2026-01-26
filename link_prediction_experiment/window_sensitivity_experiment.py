@@ -691,31 +691,31 @@ def compute_window_durations(
 
 
 def run_window_sensitivity_experiment(
-    data_file_path,
-    negative_edges_path,
-    is_directed,
-    walk_length,
-    num_walks_per_node,
-    edge_picker,
-    embedding_dim,
-    edge_op,
-    negative_edges_per_positive,
-    n_epochs,
-    incremental_embedding_use_gpu,
-    link_prediction_use_gpu,
-    n_runs,
-    batch_size,
-    batch_divisor=100,
-    window_divisor_start=100,
-    num_window_steps=20,
-    word2vec_n_workers=8,
-    word2vec_batch_epochs=3,
-    output_path=None
+        data_file_path,
+        negative_edges_path,
+        is_directed,
+        walk_length,
+        num_walks_per_node,
+        edge_picker,
+        embedding_dim,
+        edge_op,
+        negative_edges_per_positive,
+        n_epochs,
+        incremental_embedding_use_gpu,
+        link_prediction_use_gpu,
+        n_runs,
+        batch_size,
+        batch_divisor=100,
+        window_divisor_start=100,
+        num_window_steps=20,
+        word2vec_n_workers=8,
+        word2vec_batch_epochs=3,
+        output_path=None
 ):
     logger.info("Starting window-size (Δ) sensitivity experiment")
 
     # --------------------------
-    # Dataset split (unchanged)
+    # Dataset split
     # --------------------------
     train_df, valid_df, test_df = split_dataset(data_file_path)
 
@@ -735,9 +735,10 @@ def run_window_sensitivity_experiment(
         test_sources, test_targets
     ])
     max_node_id = int(all_node_ids.max())
+    logger.info(f"Maximum node ID in dataset: {max_node_id}")
 
     # --------------------------
-    # Negatives (unchanged)
+    # Negatives (IDENTICAL)
     # --------------------------
     negative_edges_df = pd.read_parquet(negative_edges_path)
     negative_sources = negative_edges_df['u'].to_numpy()
@@ -747,18 +748,38 @@ def run_window_sensitivity_experiment(
     valid_neg_end = train_neg_end + len(val_sources) * negative_edges_per_positive
     test_neg_end  = valid_neg_end + len(test_sources) * negative_edges_per_positive
 
+    neg_src_train = negative_sources[:train_neg_end]
+    neg_tgt_train = negative_targets[:train_neg_end]
+
     neg_src_val = negative_sources[train_neg_end:valid_neg_end]
     neg_tgt_val = negative_targets[train_neg_end:valid_neg_end]
 
     neg_src_test = negative_sources[valid_neg_end:test_neg_end]
     neg_tgt_test = negative_targets[valid_neg_end:test_neg_end]
 
+    # Build supervised datasets
+    train_src_all, train_tgt_all, train_lbl_all = combine_negative_with_positive_edges(
+        train_sources,
+        train_targets,
+        neg_src_train,
+        neg_tgt_train,
+        negative_edges_per_positive
+    )
+
     val_src_all, val_tgt_all, val_lbl_all = combine_negative_with_positive_edges(
-        val_sources, val_targets, neg_src_val, neg_tgt_val, negative_edges_per_positive
+        val_sources,
+        val_targets,
+        neg_src_val,
+        neg_tgt_val,
+        negative_edges_per_positive
     )
 
     test_src_all, test_tgt_all, test_lbl_all = combine_negative_with_positive_edges(
-        test_sources, test_targets, neg_src_test, neg_tgt_test, negative_edges_per_positive
+        test_sources,
+        test_targets,
+        neg_src_test,
+        neg_tgt_test,
+        negative_edges_per_positive
     )
 
     # --------------------------
@@ -792,11 +813,13 @@ def run_window_sensitivity_experiment(
         walk_times = []
         aucs = []
 
+        device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
+
         for run in range(n_runs):
-            logger.info(f"Run {run + 1}/{n_runs}")
+            logger.info(f"\n--- Run {run + 1}/{n_runs} ---")
 
             # --------------------------
-            # Streaming embeddings + timing
+            # Streaming embeddings
             # --------------------------
             embeddings, ingest_t, walk_t = train_embeddings_streaming_approach(
                 train_sources=train_sources,
@@ -819,15 +842,13 @@ def run_window_sensitivity_experiment(
 
             embedding_tensor = get_embedding_tensor(embeddings, max_node_id)
 
-            device = 'cuda' if link_prediction_use_gpu and torch.cuda.is_available() else 'cpu'
-
             # --------------------------
             # Downstream link prediction
             # --------------------------
-            res = evaluate_link_prediction(
-                train_sources=train_sources,
-                train_targets=train_targets,
-                train_labels=None,  # labels already built internally
+            current_results = evaluate_link_prediction(
+                train_sources=train_src_all,
+                train_targets=train_tgt_all,
+                train_labels=train_lbl_all,
                 valid_sources=val_src_all,
                 valid_targets=val_tgt_all,
                 valid_labels=val_lbl_all,
@@ -842,10 +863,10 @@ def run_window_sensitivity_experiment(
                 device=device
             )
 
-            aucs.append(res['auc'])
+            aucs.append(current_results['auc'])
 
         # --------------------------
-        # Aggregate statistics
+        # Aggregate results per Δ
         # --------------------------
         results[rel_h] = {
             'window_duration': delta,
@@ -866,6 +887,9 @@ def run_window_sensitivity_experiment(
             f"AUC: {np.mean(aucs):.4f} ± {np.std(aucs):.4f}"
         )
 
+    # --------------------------
+    # Persist results
+    # --------------------------
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'wb') as f:
