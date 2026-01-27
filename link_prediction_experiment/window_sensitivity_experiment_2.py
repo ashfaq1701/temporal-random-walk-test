@@ -463,13 +463,13 @@ def train_embeddings_streaming_approach(
     train_sources, train_targets, train_timestamps,
     batch_ts_size, sliding_window_duration, is_directed,
     walk_length, num_walks_per_node, edge_picker, embedding_dim,
-    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42
+    walk_use_gpu, word2vec_n_workers, batch_epochs, seed=42, tempest_seed=42
 ):
     """Train embeddings using a single incremental Word2Vec model (no EMA)."""
     logger.info("Training embeddings with streaming approach (incremental Word2Vec)")
 
     temporal_random_walk = TemporalRandomWalk(
-        is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=sliding_window_duration
+        is_directed=is_directed, use_gpu=walk_use_gpu, max_time_capacity=sliding_window_duration, global_seed=tempest_seed
     )
 
     min_ts = int(np.min(train_timestamps))
@@ -702,6 +702,7 @@ def run_window_sensitivity_experiment(
         num_window_steps=20,
         word2vec_n_workers=8,
         word2vec_batch_epochs=3,
+        tempest_seed=42,
         output_path=None
 ):
     logger.info("Starting window-size (Δ) sensitivity experiment")
@@ -826,7 +827,8 @@ def run_window_sensitivity_experiment(
                 embedding_dim=embedding_dim,
                 walk_use_gpu=incremental_embedding_use_gpu,
                 word2vec_n_workers=word2vec_n_workers,
-                batch_epochs=word2vec_batch_epochs
+                batch_epochs=word2vec_batch_epochs,
+                tempest_seed=tempest_seed
             )
 
             ingestion_times.append(ingest_t)
@@ -1034,6 +1036,16 @@ def main():
     )
 
     # --------------------------
+    # Seeds
+    # --------------------------
+    parser.add_argument(
+        '--tempest_seed',
+        type=int,
+        default=42,
+        help='Seed for tempest'
+    )
+
+    # --------------------------
     # Output
     # --------------------------
     parser.add_argument(
@@ -1069,6 +1081,7 @@ def main():
         num_window_steps=args.num_window_steps,
         word2vec_n_workers=args.word2vec_n_workers,
         word2vec_batch_epochs=args.word2vec_batch_epochs,
+        tempest_seed=args.tempest_seed,
         output_path=args.output_path
     )
 
