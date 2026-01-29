@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import random
 import os
@@ -789,6 +790,8 @@ def run_window_sensitivity_experiment(
     window_durations, relative_history = compute_window_durations(
         min_ts, max_ts, window_divisor_start, window_divisor_end, num_window_steps
     )
+
+    logger.info(f"Relative histories: {json.dumps(relative_history)}")
 
     logger.info(f"Batch duration fixed at T/{batch_divisor} = {batch_ts_size}")
     logger.info("Window schedule (Relative history T/Δ):")
