@@ -886,14 +886,11 @@ def run_window_sensitivity_experiment(
             f"AUC: {np.mean(aucs):.4f} ± {np.std(aucs):.4f}"
         )
 
-    # --------------------------
-    # Persist results
-    # --------------------------
-    if output_path:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        if output_path:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'wb') as f:
             pickle.dump(results, f)
-        logger.info(f"Results saved to {output_path}")
+        logger.info(f"Intermediate results saved to {output_path}")
 
     return results
 
