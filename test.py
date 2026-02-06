@@ -173,7 +173,7 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
                 is_directed=True,
                 use_gpu=use_gpu,
                 max_time_capacity=-1,
-                enable_weight_computation=True   # required
+                enable_temporal_node2vec=True   # required
             )
             trw.add_multiple_edges(sources, targets, timestamps)
 
