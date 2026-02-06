@@ -101,6 +101,7 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
 
     walk_sampling_times_index_based = []
     walk_sampling_times_weight_based = []
+    walk_sampling_times_node2vec = []
 
     sources = all_sources[:num_edges]
     targets = all_targets[:num_edges]
@@ -109,11 +110,15 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
     for num_walks in walk_nums:
         print(f"Testing walk count: {num_walks:,}")
 
-        # index based
+        # --------------------------------------------------
+        # Index-based
+        # --------------------------------------------------
         current_times = []
         for _ in range(N_RUNS):
             trw = TemporalRandomWalk(
-                is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
+                is_directed=True,
+                use_gpu=use_gpu,
+                max_time_capacity=-1,
                 enable_weight_computation=False
             )
             trw.add_multiple_edges(sources, targets, timestamps)
@@ -129,14 +134,18 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
             current_times.append(time.time() - start)
 
         avg_time = np.mean(current_times)
-        print(f"Index Based walk sampling time: {avg_time:.3f} sec")
+        print(f"Index-based walk sampling time: {avg_time:.3f} sec")
         walk_sampling_times_index_based.append(current_times)
 
-        # weight based
+        # --------------------------------------------------
+        # Weight-based
+        # --------------------------------------------------
         current_times = []
         for _ in range(N_RUNS):
             trw = TemporalRandomWalk(
-                is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
+                is_directed=True,
+                use_gpu=use_gpu,
+                max_time_capacity=-1,
                 enable_weight_computation=True
             )
             trw.add_multiple_edges(sources, targets, timestamps)
@@ -152,12 +161,40 @@ def progressively_higher_walk_sampling_test(all_sources, all_targets, all_timest
             current_times.append(time.time() - start)
 
         avg_time = np.mean(current_times)
-        print(f"Weight based walk sampling time: {avg_time:.3f} sec")
+        print(f"Weight-based walk sampling time: {avg_time:.3f} sec")
         walk_sampling_times_weight_based.append(current_times)
+
+        # --------------------------------------------------
+        # Temporal Node2Vec (second-order)
+        # --------------------------------------------------
+        current_times = []
+        for _ in range(N_RUNS):
+            trw = TemporalRandomWalk(
+                is_directed=True,
+                use_gpu=use_gpu,
+                max_time_capacity=-1,
+                enable_weight_computation=True   # required
+            )
+            trw.add_multiple_edges(sources, targets, timestamps)
+
+            start = time.time()
+            trw.get_random_walks_and_times(
+                max_walk_len=max_walk_len,
+                walk_bias="TemporalNode2Vec",
+                num_walks_total=num_walks,
+                initial_edge_bias="Uniform",
+                walk_direction="Forward_In_Time"
+            )
+            current_times.append(time.time() - start)
+
+        avg_time = np.mean(current_times)
+        print(f"TemporalNode2Vec walk sampling time: {avg_time:.3f} sec")
+        walk_sampling_times_node2vec.append(current_times)
 
     return {
         "walk_sampling_time_index_based": walk_sampling_times_index_based,
-        "walk_sampling_time_weight_based": walk_sampling_times_weight_based
+        "walk_sampling_time_weight_based": walk_sampling_times_weight_based,
+        "walk_sampling_time_temporal_node2vec": walk_sampling_times_node2vec
     }
 
 
