@@ -42,13 +42,17 @@ def benchmark_dataset(
         trw.add_multiple_edges(sources, targets, timestamps)
 
         start = time.time()
-        trw.get_random_walks_and_times(
+        _, _, walk_lens = trw.get_random_walks_and_times(
             max_walk_len=max_walk_length,
             walk_bias="TemporalNode2Vec",
             num_walks_total=num_walks_total,
             initial_edge_bias="Uniform",
             walk_direction="Forward_In_Time"
         )
+
+        avg_walk_len = np.mean(walk_lens)
+        print("Average walk length: ", avg_walk_len)
+
         elapsed = time.time() - start
         run_times.append(elapsed)
 
