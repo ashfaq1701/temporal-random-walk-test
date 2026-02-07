@@ -7,14 +7,15 @@ from temporal_random_walk import TemporalRandomWalk
 from utils import read_temporal_edges
 
 N_RUNS = 5
-MAX_WALK_LEN = 80
 
 
 def benchmark_dataset(
     data_file: str,
-    walks_per_node: int
+    walks_per_node: int,
+    max_walk_length: int
 ):
     sources, targets, timestamps = read_temporal_edges(data_file)
+
     num_nodes = int(
         max(sources.max(), targets.max()) + 1
     )
@@ -42,7 +43,7 @@ def benchmark_dataset(
 
         start = time.time()
         trw.get_random_walks_and_times(
-            max_walk_len=MAX_WALK_LEN,
+            max_walk_len=max_walk_length,
             walk_bias="TemporalNode2Vec",
             num_walks_total=num_walks_total,
             initial_edge_bias="Uniform",
@@ -56,13 +57,14 @@ def benchmark_dataset(
     return run_times
 
 
-def main(data_files, walks_per_node, output_file):
+def main(data_files, walks_per_node, max_walk_length, output_file):
     results = {}
 
     for data_file in data_files:
         run_times = benchmark_dataset(
             data_file=data_file,
-            walks_per_node=walks_per_node
+            walks_per_node=walks_per_node,
+            max_walk_length=max_walk_length
         )
         results[data_file] = run_times
 
@@ -102,6 +104,13 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--max_walk_length",
+        type=int,
+        default=80,
+        help="Max walk length (default: 80)"
+    )
+
+    parser.add_argument(
         "--output_file",
         type=str,
         default="temporal_node2vec_results.pkl",
@@ -113,5 +122,6 @@ if __name__ == "__main__":
     main(
         data_files=args.data_files,
         walks_per_node=args.walks_per_node,
+        max_walk_length=args.max_walk_length,
         output_file=args.output_file
     )
