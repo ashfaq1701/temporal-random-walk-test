@@ -235,7 +235,7 @@ def main(data_file, fixed_edges_for_walk_gen, n_runs):
         )
     }
 
-    out_file = "results/results_trw_raphtory_with_tn2v.pkl"
+    out_file = "results/results_trw_raphtory_edge_addition.pickle"
     pickle.dump(results, open(out_file, "wb"))
     print(f"\nSaved results to {out_file}")
 
