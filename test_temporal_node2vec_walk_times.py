@@ -50,8 +50,8 @@ def benchmark_dataset(
             walk_direction="Forward_In_Time"
         )
 
-        avg_walk_len = np.mean(walk_lens)
-        print("Average walk length: ", avg_walk_len)
+        print("Average walk length: ", np.mean(walk_lens))
+        print("Max walk length: ", np.max(walk_lens))
 
         elapsed = time.time() - start
         run_times.append(elapsed)
