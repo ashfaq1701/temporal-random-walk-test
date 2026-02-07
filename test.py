@@ -82,40 +82,40 @@ def progressive_higher_edge_addition_test(all_sources, all_targets, all_timestam
             )
             walk_times.append(time.time() - start)
 
-        edge_addition_times_temporal_node2vec.append(add_times)
+        edge_addition_times_with_weights.append(add_times)
         walk_sampling_times_weight_based.append(walk_times)
 
-        #Node2Vec
-        add_times = []
-        walk_times = []
-        for _ in range(N_RUNS):
-            trw = TemporalRandomWalk(
-                is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
-                enable_temporal_node2vec=True
-            )
-            start = time.time()
-            trw.add_multiple_edges(sources, targets, timestamps)
-            add_times.append(time.time() - start)
-
-            start = time.time()
-            trw.get_random_walks_and_times(
-                max_walk_len=max_walk_len,
-                walk_bias="TemporalNode2Vec",
-                num_walks_total=walk_count,
-                initial_edge_bias="Uniform",
-                walk_direction="Forward_In_Time"
-            )
-            walk_times.append(time.time() - start)
-
-        edge_addition_times_temporal_node2vec.append(add_times)
-        walk_sampling_times_temporal_node2vec.append(walk_times)
+        # #Node2Vec
+        # add_times = []
+        # walk_times = []
+        # for _ in range(N_RUNS):
+        #     trw = TemporalRandomWalk(
+        #         is_directed=True, use_gpu=use_gpu, max_time_capacity=-1,
+        #         enable_temporal_node2vec=True
+        #     )
+        #     start = time.time()
+        #     trw.add_multiple_edges(sources, targets, timestamps)
+        #     add_times.append(time.time() - start)
+        #
+        #     start = time.time()
+        #     trw.get_random_walks_and_times(
+        #         max_walk_len=max_walk_len,
+        #         walk_bias="TemporalNode2Vec",
+        #         num_walks_total=walk_count,
+        #         initial_edge_bias="Uniform",
+        #         walk_direction="Forward_In_Time"
+        #     )
+        #     walk_times.append(time.time() - start)
+        #
+        # edge_addition_times_temporal_node2vec.append(add_times)
+        # walk_sampling_times_temporal_node2vec.append(walk_times)
     return {
         "edge_addition_time_without_weights": edge_addition_times_without_weights,
         "walk_sampling_time_index_based": walk_sampling_times_index_based,
         "edge_addition_time_with_weights": edge_addition_times_with_weights,
         "walk_sampling_time_weight_based": walk_sampling_times_weight_based,
-        "edge_addition_times_temporal_node2vec": edge_addition_times_temporal_node2vec,
-        "walk_sampling_times_temporal_node2vec": walk_sampling_times_temporal_node2vec
+        # "edge_addition_times_temporal_node2vec": edge_addition_times_temporal_node2vec,
+        # "walk_sampling_times_temporal_node2vec": walk_sampling_times_temporal_node2vec
     }
 
 
