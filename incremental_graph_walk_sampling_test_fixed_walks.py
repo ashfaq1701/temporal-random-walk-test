@@ -40,10 +40,14 @@ MODE_TO_BIAS = {
 def load_data(data_file_path):
     df = pd.read_csv(
         data_file_path,
-        sep=r"\s+",
-        skiprows=2,
+        sep=",",
         header=None,
-        names=["u", "i", "x", "ts"]
+        names=["u", "i", "ts"],
+        dtype={
+            "u": np.int32,
+            "i": np.int32,
+            "ts": np.int64
+        }
     )
     return df
 
