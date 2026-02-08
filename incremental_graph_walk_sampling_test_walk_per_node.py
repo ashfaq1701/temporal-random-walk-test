@@ -6,7 +6,10 @@ import numpy as np
 
 from temporal_random_walk import TemporalRandomWalk
 
-MAX_WALK_LENGTH = 40
+# ------------------------------------------------------------
+# Config
+# ------------------------------------------------------------
+MAX_WALK_LENGTH = 50
 
 EDGE_COUNTS = [
     1_000,
@@ -24,6 +27,12 @@ EDGE_COUNTS = [
     301_183_000
 ]
 
+MODE_TO_BIAS = {
+    "index": "ExponentialIndex",
+    "weight": "ExponentialWeight",
+    "tn2v": "TemporalNode2Vec",
+}
+
 # ------------------------------------------------------------
 # Data loading
 # ------------------------------------------------------------
@@ -39,12 +48,12 @@ def load_data(data_file_path):
 
 
 # ------------------------------------------------------------
-# Walk sampling vs edge count (1 walk per node)
+# Walk sampling vs edge count (1 walk per node, simplified)
 # ------------------------------------------------------------
-def walk_sampling_vs_edges(
+def walk_sampling_vs_edges_simple(
     data_df,
     use_gpu,
-    mode,      # "index", "weight", "tn2v"
+    mode,     # "index", "weight", "tn2v"
     n_runs
 ):
     results = []
@@ -53,48 +62,54 @@ def walk_sampling_vs_edges(
     all_targets = data_df["i"].to_numpy()
     all_timestamps = data_df["ts"].to_numpy()
 
+    print(f"\n=== {mode.upper()} | {'GPU' if use_gpu else 'CPU'} ===")
+
     for edge_count in EDGE_COUNTS:
-        print(f"\n--- {mode.upper()} | {edge_count:,} edges ---")
+        print(f"\n--- {edge_count:,} edges ---")
 
         sources = all_sources[:edge_count]
         targets = all_targets[:edge_count]
         timestamps = all_timestamps[:edge_count]
 
-        # Number of nodes = max node id + 1
+        # Number of nodes → total walks (1 walk per node)
         num_nodes = int(max(sources.max(), targets.max()) + 1)
-        num_walks_per_node = 1
+        print(f"Sampling {num_nodes:,} total walks (1 per node)")
 
-        print(f"Sampling {num_nodes:,} walks (1 per node)")
+        # --------------------------------------------------
+        # Construct + ingest ONCE
+        # --------------------------------------------------
+        trw = TemporalRandomWalk(
+            is_directed=True,
+            use_gpu=use_gpu,
+            max_time_capacity=-1,
+            enable_weight_computation=(mode == "weight"),
+            enable_temporal_node2vec=(mode == "tn2v")
+        )
 
+        trw.add_multiple_edges(sources, targets, timestamps)
+
+        # --------------------------------------------------
+        # Repeated sampling
+        # --------------------------------------------------
         run_times = []
 
-        for _ in range(n_runs):
-            trw = TemporalRandomWalk(
-                is_directed=True,
-                use_gpu=use_gpu,
-                max_time_capacity=-1,
-                enable_weight_computation=(mode == "weight"),
-                enable_temporal_node2vec=(mode == "tn2v")
-            )
-
-            trw.add_multiple_edges(sources, targets, timestamps)
-
+        for run_id in range(n_runs):
             start = time.time()
-            trw.get_random_walks_and_times_for_all_nodes(
+            trw.get_random_walks_and_times(
                 max_walk_len=MAX_WALK_LENGTH,
-                walk_bias={
-                    "index": "ExponentialIndex",
-                    "weight": "ExponentialWeight",
-                    "tn2v": "TemporalNode2Vec"
-                }[mode],
-                num_walks_per_node=num_walks_per_node,
+                walk_bias=MODE_TO_BIAS[mode],
+                num_walks_total=num_nodes,
                 initial_edge_bias="Uniform",
                 walk_direction="Forward_In_Time"
             )
-            run_times.append(time.time() - start)
+            elapsed = time.time() - start
+
+            print(f"  Run {run_id + 1}/{n_runs}: {elapsed:.3f} sec")
+            run_times.append(elapsed)
 
         avg = np.mean(run_times)
-        print(f"[RESULT] Avg walk sampling time: {avg:.3f} sec")
+        print(f"[AVG] {avg:.3f} sec")
+
         results.append(run_times)
 
     return results
@@ -109,36 +124,37 @@ def main(data_file, n_runs):
 
     results = {
         # GPU
-        "walk_time_gpu_index": walk_sampling_vs_edges(
+        "walk_time_gpu_index": walk_sampling_vs_edges_simple(
             data_df, True, "index", n_runs
         ),
-        "walk_time_gpu_weight": walk_sampling_vs_edges(
+        "walk_time_gpu_weight": walk_sampling_vs_edges_simple(
             data_df, True, "weight", n_runs
         ),
-        "walk_time_gpu_tn2v": walk_sampling_vs_edges(
+        "walk_time_gpu_tn2v": walk_sampling_vs_edges_simple(
             data_df, True, "tn2v", n_runs
         ),
 
         # CPU
-        "walk_time_cpu_index": walk_sampling_vs_edges(
+        "walk_time_cpu_index": walk_sampling_vs_edges_simple(
             data_df, False, "index", n_runs
         ),
-        "walk_time_cpu_weight": walk_sampling_vs_edges(
+        "walk_time_cpu_weight": walk_sampling_vs_edges_simple(
             data_df, False, "weight", n_runs
         ),
-        "walk_time_cpu_tn2v": walk_sampling_vs_edges(
+        "walk_time_cpu_tn2v": walk_sampling_vs_edges_simple(
             data_df, False, "tn2v", n_runs
         ),
     }
 
-    out_file = "results/results_walk_time_vs_edges_all_nodes.pkl"
+    out_file = "results/results_walk_time_vs_edges_all_nodes_simple.pkl"
     pickle.dump(results, open(out_file, "wb"))
+
     print(f"\nSaved results to {out_file}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Walk Sampling Time vs Edge Count (1 walk per node)"
+        description="Walk Sampling Time vs Edge Count (1 walk per node, simplified)"
     )
 
     parser.add_argument("--data_file", type=str, required=True)

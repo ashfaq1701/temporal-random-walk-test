@@ -1,8 +1,9 @@
-import argparse
-import pickle
 import time
-
+import pickle
+import argparse
 import pandas as pd
+import numpy as np
+
 from temporal_random_walk import TemporalRandomWalk
 
 # ------------------------------------------------------------
@@ -48,12 +49,12 @@ def load_data(data_file_path):
 
 
 # ------------------------------------------------------------
-# Walk sampling vs edge count (incremental graph)
+# Core benchmark
 # ------------------------------------------------------------
-def walk_sampling_vs_edges_incremental(
+def walk_sampling_vs_edges_simple(
     data_df,
     use_gpu,
-    mode,      # "index", "weight", "tn2v"
+    mode,     # "index", "weight", "tn2v"
     n_runs
 ):
     results = []
@@ -64,9 +65,12 @@ def walk_sampling_vs_edges_incremental(
 
     print(f"\n=== {mode.upper()} | {'GPU' if use_gpu else 'CPU'} ===")
 
-    for run_id in range(n_runs):
-        print(f"\n--- Run {run_id + 1}/{n_runs} ---")
+    for edge_count in EDGE_COUNTS:
+        print(f"\n--- {edge_count:,} edges ---")
 
+        # --------------------------------------------------
+        # Construct + ingest once
+        # --------------------------------------------------
         trw = TemporalRandomWalk(
             is_directed=True,
             use_gpu=use_gpu,
@@ -75,21 +79,20 @@ def walk_sampling_vs_edges_incremental(
             enable_temporal_node2vec=(mode == "tn2v")
         )
 
-        prev_edge_count = 0
+        trw.add_multiple_edges(
+            all_sources[:edge_count],
+            all_targets[:edge_count],
+            all_timestamps[:edge_count]
+        )
+
+        print(f"Graph ready. Sampling {NUM_WALKS_TOTAL:,} walks × {n_runs}")
+
+        # --------------------------------------------------
+        # Repeated sampling
+        # --------------------------------------------------
         run_times = []
 
-        for edge_count in EDGE_COUNTS:
-            print(f"\nAdding edges: {prev_edge_count:,} → {edge_count:,}")
-
-            # Incremental edge addition
-            trw.add_multiple_edges(
-                all_sources[prev_edge_count:edge_count],
-                all_targets[prev_edge_count:edge_count],
-                all_timestamps[prev_edge_count:edge_count]
-            )
-
-            print(f"Sampling {NUM_WALKS_TOTAL:,} walks")
-
+        for run_id in range(n_runs):
             start = time.time()
             trw.get_random_walks_and_times(
                 max_walk_len=MAX_WALK_LENGTH,
@@ -100,10 +103,11 @@ def walk_sampling_vs_edges_incremental(
             )
             elapsed = time.time() - start
 
-            print(f"[RESULT] Walk sampling time: {elapsed:.3f} sec")
+            print(f"  Run {run_id + 1}/{n_runs}: {elapsed:.3f} sec")
             run_times.append(elapsed)
 
-            prev_edge_count = edge_count
+        avg = np.mean(run_times)
+        print(f"[AVG] {avg:.3f} sec")
 
         results.append(run_times)
 
@@ -119,29 +123,29 @@ def main(data_file, n_runs):
 
     results = {
         # GPU
-        "walk_time_gpu_index": walk_sampling_vs_edges_incremental(
+        "walk_time_gpu_index": walk_sampling_vs_edges_simple(
             data_df, True, "index", n_runs
         ),
-        "walk_time_gpu_weight": walk_sampling_vs_edges_incremental(
+        "walk_time_gpu_weight": walk_sampling_vs_edges_simple(
             data_df, True, "weight", n_runs
         ),
-        "walk_time_gpu_tn2v": walk_sampling_vs_edges_incremental(
+        "walk_time_gpu_tn2v": walk_sampling_vs_edges_simple(
             data_df, True, "tn2v", n_runs
         ),
 
         # CPU
-        "walk_time_cpu_index": walk_sampling_vs_edges_incremental(
+        "walk_time_cpu_index": walk_sampling_vs_edges_simple(
             data_df, False, "index", n_runs
         ),
-        "walk_time_cpu_weight": walk_sampling_vs_edges_incremental(
+        "walk_time_cpu_weight": walk_sampling_vs_edges_simple(
             data_df, False, "weight", n_runs
         ),
-        "walk_time_cpu_tn2v": walk_sampling_vs_edges_incremental(
+        "walk_time_cpu_tn2v": walk_sampling_vs_edges_simple(
             data_df, False, "tn2v", n_runs
         ),
     }
 
-    out_file = "results/results_walk_time_vs_edges_10M_incremental.pkl"
+    out_file = "results/results_walk_time_vs_edges_10M_simple.pkl"
     pickle.dump(results, open(out_file, "wb"))
 
     print(f"\nSaved results to {out_file}")
@@ -149,7 +153,7 @@ def main(data_file, n_runs):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Walk Sampling Time vs Edge Count (10M walks, incremental graph)"
+        description="Walk Sampling Time vs Edge Count (10M walks, n_runs per ingestion)"
     )
 
     parser.add_argument("--data_file", type=str, required=True)
