@@ -41,8 +41,8 @@ def load_data(data_file_path):
     df = pd.read_csv(
         data_file_path,
         sep=",",
-        header=None,
-        names=["u", "i", "ts"],
+        header=0,                 # first line is header: u,i,ts
+        usecols=["u", "i", "ts"], # ignore anything else just in case
         dtype={
             "u": np.int32,
             "i": np.int32,
