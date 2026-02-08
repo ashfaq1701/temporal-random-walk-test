@@ -9,7 +9,7 @@ from temporal_random_walk import TemporalRandomWalk
 # ------------------------------------------------------------
 # Config
 # ------------------------------------------------------------
-MAX_WALK_LENGTH = 50
+MAX_WALK_LENGTH = 40
 
 EDGE_COUNTS = [
     1_000,
