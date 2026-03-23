@@ -32,6 +32,7 @@ MODE_TO_BIAS = {
     "index": "ExponentialIndex",
     "weight": "ExponentialWeight",
     "tn2v": "TemporalNode2Vec",
+    "spatiotemporal": "SpatialTemporal",
 }
 
 # ------------------------------------------------------------
