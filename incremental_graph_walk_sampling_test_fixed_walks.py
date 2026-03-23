@@ -131,28 +131,28 @@ def main(data_file, n_runs):
         "walk_time_gpu_spatiotemporal": walk_sampling_vs_edges_simple(
             data_df, True, "spatiotemporal", n_runs
         ),
+        "walk_time_gpu_tn2v": walk_sampling_vs_edges_simple(
+            data_df, True, "tn2v", n_runs
+        ),
         "walk_time_gpu_weight": walk_sampling_vs_edges_simple(
             data_df, True, "weight", n_runs
         ),
         "walk_time_gpu_index": walk_sampling_vs_edges_simple(
             data_df, True, "index", n_runs
         ),
-        "walk_time_gpu_tn2v": walk_sampling_vs_edges_simple(
-            data_df, True, "tn2v", n_runs
-        ),
 
         # CPU
         "walk_time_cpu_spatiotemporal": walk_sampling_vs_edges_simple(
             data_df, False, "spatiotemporal", n_runs
+        ),
+        "walk_time_cpu_tn2v": walk_sampling_vs_edges_simple(
+            data_df, False, "tn2v", n_runs
         ),
         "walk_time_cpu_weight": walk_sampling_vs_edges_simple(
             data_df, False, "weight", n_runs
         ),
         "walk_time_cpu_index": walk_sampling_vs_edges_simple(
             data_df, False, "index", n_runs
-        ),
-        "walk_time_cpu_tn2v": walk_sampling_vs_edges_simple(
-            data_df, False, "tn2v", n_runs
         ),
     }
 
