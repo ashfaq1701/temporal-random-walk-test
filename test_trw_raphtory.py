@@ -35,14 +35,7 @@ WALK_COUNTS = [
 # Data loading
 # ------------------------------------------------------------
 def load_data(data_file_path):
-    df = pd.read_csv(
-        data_file_path,
-        sep=r"\s+",
-        skiprows=2,
-        header=None,
-        names=["u", "i", "x", "ts"]
-    )
-    return df
+    return pd.read_csv(data_file_path)
 
 
 # ------------------------------------------------------------
@@ -113,7 +106,12 @@ def edge_addition_test_raphtory(data_df, n_runs):
         for _ in range(n_runs):
             g = Graph()
             start = time.time()
-            g.load_edges_from_pandas(df=cur_df, time="ts", src="u", dst="i")
+            g.load_edges(
+                data=cur_df,
+                src="u",
+                dst="i",
+                time="ts",
+            )
             run_times.append(time.time() - start)
 
         avg = np.mean(run_times)
@@ -209,6 +207,11 @@ def main(data_file, fixed_edges_for_walk_gen, n_runs):
             data_df, False, "tn2v", fixed_edges_for_walk_gen, n_runs
         ),
 
+        # Raphtory baseline
+        "raphtory_edge_ingest": edge_addition_test_raphtory(
+            data_df, n_runs
+        ),
+
         # Edge ingestion (Tempest)
         "edge_ingest_gpu_index": edge_addition_test_trw(
             data_df, True, "index", n_runs
@@ -228,11 +231,6 @@ def main(data_file, fixed_edges_for_walk_gen, n_runs):
         "edge_ingest_cpu_tn2v": edge_addition_test_trw(
             data_df, False, "tn2v", n_runs
         ),
-
-        # Raphtory baseline
-        "raphtory_edge_ingest": edge_addition_test_raphtory(
-            data_df, n_runs
-        )
     }
 
     out_file = "results/results_trw_raphtory_edge_addition.pickle"
