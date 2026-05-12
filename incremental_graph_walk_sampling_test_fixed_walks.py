@@ -31,8 +31,7 @@ EDGE_COUNTS = [
 MODE_TO_BIAS = {
     "index": "ExponentialIndex",
     "weight": "ExponentialWeight",
-    "tn2v": "TemporalNode2Vec",
-    "spatiotemporal": "SpatioTemporal",
+    "tn2v": "TemporalNode2Vec"
 }
 
 # ------------------------------------------------------------
@@ -80,7 +79,7 @@ def walk_sampling_vs_edges_simple(
             is_directed=True,
             use_gpu=use_gpu,
             max_time_capacity=-1,
-            enable_weight_computation=(mode == "weight" or mode == "spatiotemporal"),
+            enable_weight_computation=(mode == "weight"),
             enable_temporal_node2vec=(mode == "tn2v")
         )
 
@@ -128,9 +127,6 @@ def main(data_file, n_runs):
 
     results = {
         # GPU
-        "walk_time_gpu_spatiotemporal": walk_sampling_vs_edges_simple(
-            data_df, True, "spatiotemporal", n_runs
-        ),
         "walk_time_gpu_tn2v": walk_sampling_vs_edges_simple(
             data_df, True, "tn2v", n_runs
         ),
@@ -142,9 +138,6 @@ def main(data_file, n_runs):
         ),
 
         # CPU
-        "walk_time_cpu_spatiotemporal": walk_sampling_vs_edges_simple(
-            data_df, False, "spatiotemporal", n_runs
-        ),
         "walk_time_cpu_tn2v": walk_sampling_vs_edges_simple(
             data_df, False, "tn2v", n_runs
         ),
